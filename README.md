@@ -4,7 +4,7 @@ Made by Bano Qabil Incubation. An offline-first branded ticket and interview que
 
 ## Fastest setup (Windows)
 
-Double-click `release/Bano Qabil Ticket System Setup 1.5.0.exe`, complete the installer, and launch **Bano Qabil Ticket System** from the Start menu. If Windows SmartScreen appears, choose **More info → Run anyway**; the local event build is not code-signed.
+Double-click `release/Bano Qabil Ticket System Setup 1.6.0.exe`, complete the installer, and launch **Bano Qabil Ticket System** from the Start menu. If Windows SmartScreen appears, choose **More info → Run anyway**; the local event build is not code-signed.
 
 Super Admin login is fixed in the app:
 
@@ -21,6 +21,10 @@ On the first launch, the setup wizard asks you to create the first Reception acc
 - Super Admin can create and manage multiple Reception accounts
 - Separate configurable login and live queue for every panel
 - Call, announce, start, complete, and skip candidate workflow
+- Panel and Reception self-service password changes, plus Super Admin password resets
+- Candidate editing, safe panel reassignment, ticket regeneration, and guarded deletion
+- Interview scoring (1–10) and remarks captured with the completed interview
+- Date-based CSV and Excel exports containing post-event candidate and interview data
 - Printable 80mm interview ticket
 - Public full-screen queue display at `/?display=1`
 - Local SQLite storage, audit log, and no internet dependency after installation
@@ -67,4 +71,4 @@ Data is stored in `data/banoqabil-queue.db` when using `npm start`, or in the ap
 
 ## Production roadmap
 
-After the event, the next version should add password management, CSV/Excel export, candidate edit/reassignment, backup/restore UI, multiple event dates, interview scoring and remarks, analytics, and HTTPS/cloud deployment if remote access is required.
+Future versions can add backup/restore UI, richer multi-event management, analytics, and HTTPS/cloud deployment if remote access is required.

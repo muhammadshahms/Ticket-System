@@ -91,6 +91,16 @@ export function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_tickets_event_date ON tickets(event_date);
   `);
 
+  const ticketColumns = new Set(db.prepare("PRAGMA table_info(tickets)").all().map((column) => column.name));
+  const addTicketColumn = (name, definition) => {
+    if (ticketColumns.has(name)) return;
+    try { db.exec(`ALTER TABLE tickets ADD COLUMN ${name} ${definition}`); }
+    catch (error) { if (!String(error.message).includes("duplicate column name")) throw error; }
+  };
+  addTicketColumn("interview_score", "INTEGER");
+  addTicketColumn("interview_remarks", "TEXT");
+  addTicketColumn("interviewed_by", "INTEGER REFERENCES users(id)");
+
   db.prepare("DELETE FROM sessions WHERE expires_at < datetime('now')").run();
 
   const existingAdminLogin = db.prepare("SELECT * FROM users WHERE username = ? COLLATE NOCASE").get(DEFAULT_SUPER_ADMIN.username);

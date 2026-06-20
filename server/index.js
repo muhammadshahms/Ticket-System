@@ -55,8 +55,53 @@ const mapTicket = (ticket) => ticket && ({
   calledAt: ticket.called_at,
   startedAt: ticket.started_at,
   completedAt: ticket.completed_at,
-  createdAt: ticket.created_at
+  createdAt: ticket.created_at,
+  eventDate: ticket.event_date,
+  interviewScore: ticket.interview_score,
+  interviewRemarks: ticket.interview_remarks || ""
 });
+
+const cleanCandidate = (body) => ({
+  fullName: String(body.fullName || "").trim().replace(/\s+/g, " "),
+  phoneDisplay: String(body.phone || "").trim(),
+  phone: normalizePhone(body.phone),
+  banoqabilId: String(body.banoqabilId || "").trim(),
+  course: String(body.course || "").trim(),
+  panelId: Number(body.panelId || 0)
+});
+
+function candidateError(candidate) {
+  if (candidate.fullName.length < 2) return "Please enter the candidate's full name.";
+  if (!/^03\d{9}$/.test(candidate.phone)) return "Enter a valid Pakistani mobile number, e.g. 03001234567.";
+  if (!candidate.course) return "Please enter or select a course.";
+  return null;
+}
+
+function nextToken(panelId, date) {
+  const row = db.prepare("SELECT COALESCE(MAX(token_number), 0) + 1 AS next FROM tickets WHERE panel_id = ? AND event_date = ?")
+    .get(panelId, date);
+  return { tokenNumber: row.next, tokenCode: `P${panelId}-${String(row.next).padStart(3, "0")}` };
+}
+
+const exportColumns = [
+  ["Event Date", "event_date"], ["Token", "token_code"], ["Candidate Name", "full_name"],
+  ["Phone", "phone_display"], ["Bano Qabil ID", "banoqabil_id"], ["Course", "course"],
+  ["Panel", "panel_name"], ["Status", "status"], ["Score (1-10)", "interview_score"],
+  ["Remarks", "interview_remarks"], ["Registered At", "created_at"], ["Called At", "called_at"],
+  ["Interview Started At", "started_at"], ["Completed At", "completed_at"]
+];
+
+const csvCell = (value) => `"${String(value ?? "").replace(/"/g, '""')}"`;
+export function ticketsToCsv(rows) {
+  return [exportColumns.map(([label]) => csvCell(label)).join(","), ...rows.map((row) => exportColumns.map(([, key]) => csvCell(row[key])).join(","))].join("\r\n");
+}
+
+const xmlCell = (value) => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" })[character]);
+export function ticketsToExcelXml(rows) {
+  const tableRows = [exportColumns.map(([label]) => label), ...rows.map((row) => exportColumns.map(([, key]) => row[key]))]
+    .map((values, index) => `<Row>${values.map((value) => `<Cell${index === 0 ? ' ss:StyleID="Header"' : ""}><Data ss:Type="String">${xmlCell(value)}</Data></Cell>`).join("")}</Row>`).join("");
+  return `<?xml version="1.0"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Styles><Style ss:ID="Header"><Font ss:Bold="1"/><Interior ss:Color="#DDEFE8" ss:Pattern="Solid"/></Style></Styles><Worksheet ss:Name="Candidates"><Table>${tableRows}</Table></Worksheet></Workbook>`;
+}
 
 function audit(userId, action, ticketId = null, details = null) {
   db.prepare("INSERT INTO audit_log (user_id, action, ticket_id, details) VALUES (?, ?, ?, ?)")
@@ -128,6 +173,22 @@ app.get("/api/auth/me", authRequired, (req, res) => res.json({ user: publicUser(
 
 app.post("/api/auth/logout", authRequired, (req, res) => {
   db.prepare("DELETE FROM sessions WHERE token_hash = ?").run(req.sessionHash);
+  res.status(204).end();
+});
+
+app.patch("/api/auth/password", authRequired, allowRoles("panel", "reception"), (req, res) => {
+  const currentPassword = String(req.body.currentPassword || "");
+  const newPassword = String(req.body.newPassword || "");
+  const user = db.prepare("SELECT * FROM users WHERE id = ?").get(req.user.id);
+  const minimum = user.role === "reception" ? 8 : 6;
+  if (!verifyPassword(currentPassword, user.password_hash)) return res.status(400).json({ error: "Current password is incorrect." });
+  if (newPassword.length < minimum) return res.status(400).json({ error: `New password must be at least ${minimum} characters.` });
+  if (currentPassword === newPassword) return res.status(400).json({ error: "Choose a password different from your current password." });
+  db.transaction(() => {
+    db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(hashPassword(newPassword), user.id);
+    db.prepare("DELETE FROM sessions WHERE user_id = ? AND token_hash != ?").run(user.id, req.sessionHash);
+    audit(user.id, "password_changed");
+  })();
   res.status(204).end();
 });
 
@@ -301,19 +362,26 @@ app.get("/api/tickets", authRequired, (req, res) => {
   res.json({ tickets: tickets.map(mapTicket) });
 });
 
+app.get("/api/exports/tickets", authRequired, allowRoles("admin", "reception"), (req, res) => {
+  const date = String(req.query.date || todayLocal());
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: "Choose a valid event date." });
+  const rows = db.prepare(`${ticketSelect} WHERE t.event_date = ? ORDER BY t.panel_id, t.token_number`).all(date);
+  const format = String(req.query.format || "csv").toLowerCase();
+  if (format === "xls") {
+    res.set({ "Content-Type": "application/vnd.ms-excel; charset=utf-8", "Content-Disposition": `attachment; filename="banoqabil-candidates-${date}.xls"` });
+    return res.send(ticketsToExcelXml(rows));
+  }
+  res.set({ "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="banoqabil-candidates-${date}.csv"` });
+  res.send(`\uFEFF${ticketsToCsv(rows)}`);
+});
+
 app.post("/api/tickets", authRequired, allowRoles("admin", "reception"), (req, res) => {
-  const fullName = String(req.body.fullName || "").trim().replace(/\s+/g, " ");
-  const phoneDisplay = String(req.body.phone || "").trim();
-  const phone = normalizePhone(phoneDisplay);
-  const banoqabilId = String(req.body.banoqabilId || "").trim();
-  const course = String(req.body.course || "").trim();
-  let panelId = Number(req.body.panelId || 0);
+  const candidate = cleanCandidate(req.body);
+  let { panelId } = candidate;
+  const validationError = candidateError(candidate);
+  if (validationError) return res.status(400).json({ error: validationError });
 
-  if (fullName.length < 2) return res.status(400).json({ error: "Please enter the candidate's full name." });
-  if (!/^03\d{9}$/.test(phone)) return res.status(400).json({ error: "Enter a valid Pakistani mobile number, e.g. 03001234567." });
-  if (!course) return res.status(400).json({ error: "Please enter or select a course." });
-
-  const duplicate = db.prepare(`${ticketSelect} WHERE t.phone = ?`).get(phone);
+  const duplicate = db.prepare(`${ticketSelect} WHERE t.phone = ?`).get(candidate.phone);
   if (duplicate) return res.status(409).json({ error: "This phone number is already registered.", ticket: mapTicket(duplicate) });
 
   const date = todayLocal();
@@ -331,14 +399,12 @@ app.post("/api/tickets", authRequired, allowRoles("admin", "reception"), (req, r
   }
 
   const createTicket = db.transaction(() => {
-    const row = db.prepare("SELECT COALESCE(MAX(token_number), 0) + 1 AS next FROM tickets WHERE panel_id = ? AND event_date = ?")
-      .get(panelId, date);
-    const tokenCode = `P${panelId}-${String(row.next).padStart(3, "0")}`;
+    const token = nextToken(panelId, date);
     const result = db.prepare(`
       INSERT INTO tickets
         (token_number, token_code, full_name, phone, phone_display, banoqabil_id, course, panel_id, event_date, created_by)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(row.next, tokenCode, fullName, phone, phoneDisplay, banoqabilId || null, course, panelId, date, req.user.id);
+    `).run(token.tokenNumber, token.tokenCode, candidate.fullName, candidate.phone, candidate.phoneDisplay, candidate.banoqabilId || null, candidate.course, panelId, date, req.user.id);
     audit(req.user.id, "ticket_created", result.lastInsertRowid, { panelId });
     return db.prepare(`${ticketSelect} WHERE t.id = ?`).get(result.lastInsertRowid);
   });
@@ -352,6 +418,60 @@ app.post("/api/tickets", authRequired, allowRoles("admin", "reception"), (req, r
     console.error(error);
     res.status(500).json({ error: "Could not create the ticket." });
   }
+});
+
+app.patch("/api/tickets/:id", authRequired, allowRoles("admin", "reception"), (req, res) => {
+  const id = Number(req.params.id);
+  const existing = db.prepare(`${ticketSelect} WHERE t.id = ?`).get(id);
+  if (!existing) return res.status(404).json({ error: "Ticket not found." });
+  const candidate = cleanCandidate(req.body);
+  const validationError = candidateError(candidate);
+  if (validationError) return res.status(400).json({ error: validationError });
+  if (db.prepare("SELECT id FROM tickets WHERE phone = ? AND id != ?").get(candidate.phone, id)) return res.status(409).json({ error: "This phone number is already registered." });
+  const reassigned = candidate.panelId !== existing.panel_id;
+  if (reassigned && !db.prepare("SELECT id FROM panels WHERE id = ? AND active = 1").get(candidate.panelId)) return res.status(400).json({ error: "Please choose a valid active panel." });
+  if (reassigned && !["waiting", "skipped"].includes(existing.status)) return res.status(409).json({ error: "Only waiting or skipped candidates can be reassigned." });
+  db.transaction(() => {
+    if (reassigned) {
+      const token = nextToken(candidate.panelId, existing.event_date);
+      db.prepare(`UPDATE tickets SET full_name = ?, phone = ?, phone_display = ?, banoqabil_id = ?, course = ?, panel_id = ?, token_number = ?, token_code = ?, status = 'waiting', called_at = NULL, started_at = NULL, completed_at = NULL, interview_score = NULL, interview_remarks = NULL, interviewed_by = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+        .run(candidate.fullName, candidate.phone, candidate.phoneDisplay, candidate.banoqabilId || null, candidate.course, candidate.panelId, token.tokenNumber, token.tokenCode, id);
+    } else {
+      db.prepare("UPDATE tickets SET full_name = ?, phone = ?, phone_display = ?, banoqabil_id = ?, course = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+        .run(candidate.fullName, candidate.phone, candidate.phoneDisplay, candidate.banoqabilId || null, candidate.course, id);
+    }
+    audit(req.user.id, reassigned ? "ticket_reassigned" : "ticket_updated", id, { fromPanelId: existing.panel_id, toPanelId: candidate.panelId });
+  })();
+  const updated = db.prepare(`${ticketSelect} WHERE t.id = ?`).get(id);
+  broadcastUpdate(reassigned ? "ticket_reassigned" : "ticket_updated", { ticketId: id, panelId: candidate.panelId });
+  res.json({ ticket: mapTicket(updated) });
+});
+
+app.post("/api/tickets/:id/regenerate", authRequired, allowRoles("admin", "reception"), (req, res) => {
+  const id = Number(req.params.id);
+  const existing = db.prepare(`${ticketSelect} WHERE t.id = ?`).get(id);
+  if (!existing) return res.status(404).json({ error: "Ticket not found." });
+  if (!["waiting", "skipped"].includes(existing.status)) return res.status(409).json({ error: "Only waiting or skipped tickets can be regenerated." });
+  const token = nextToken(existing.panel_id, existing.event_date);
+  db.prepare(`UPDATE tickets SET token_number = ?, token_code = ?, status = 'waiting', called_at = NULL, started_at = NULL, completed_at = NULL, interview_score = NULL, interview_remarks = NULL, interviewed_by = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+    .run(token.tokenNumber, token.tokenCode, id);
+  audit(req.user.id, "ticket_regenerated", id, { previousToken: existing.token_code, tokenCode: token.tokenCode });
+  const updated = db.prepare(`${ticketSelect} WHERE t.id = ?`).get(id);
+  broadcastUpdate("ticket_regenerated", { ticketId: id, panelId: existing.panel_id });
+  res.json({ ticket: mapTicket(updated) });
+});
+
+app.delete("/api/tickets/:id", authRequired, allowRoles("admin", "reception"), (req, res) => {
+  const id = Number(req.params.id);
+  const ticket = db.prepare("SELECT * FROM tickets WHERE id = ?").get(id);
+  if (!ticket) return res.status(404).json({ error: "Ticket not found." });
+  if (!["waiting", "skipped"].includes(ticket.status)) return res.status(409).json({ error: "Only waiting or skipped tickets can be deleted." });
+  db.transaction(() => {
+    audit(req.user.id, "ticket_deleted", null, { ticketId: id, tokenCode: ticket.token_code, candidate: ticket.full_name });
+    db.prepare("DELETE FROM tickets WHERE id = ?").run(id);
+  })();
+  broadcastUpdate("ticket_deleted", { ticketId: id, panelId: ticket.panel_id });
+  res.status(204).end();
 });
 
 app.post("/api/panels/:panelId/call-next", authRequired, allowRoles("admin", "panel"), (req, res) => {
@@ -392,12 +512,40 @@ app.patch("/api/tickets/:id/status", authRequired, allowRoles("admin", "panel"),
     return res.status(400).json({ error: `Cannot change ${ticket.status} to ${nextStatus}.` });
   }
 
+  let score = ticket.interview_score;
+  let remarks = ticket.interview_remarks;
+  if (nextStatus === "completed") {
+    score = Number(req.body.score ?? ticket.interview_score);
+    remarks = String(req.body.remarks ?? ticket.interview_remarks ?? "").trim();
+    if (!Number.isInteger(score) || score < 1 || score > 10) return res.status(400).json({ error: "Choose an interview score from 1 to 10 before completing." });
+    if (remarks.length > 2000) return res.status(400).json({ error: "Remarks must be 2,000 characters or fewer." });
+  }
+
   const timestamps = nextStatus === "in_interview" ? ", started_at = CURRENT_TIMESTAMP"
     : nextStatus === "completed" ? ", completed_at = CURRENT_TIMESTAMP" : "";
-  db.prepare(`UPDATE tickets SET status = ?, updated_at = CURRENT_TIMESTAMP ${timestamps} WHERE id = ?`).run(nextStatus, id);
+  db.prepare(`UPDATE tickets SET status = ?, interview_score = ?, interview_remarks = ?, interviewed_by = CASE WHEN ? = 'completed' THEN ? ELSE interviewed_by END, updated_at = CURRENT_TIMESTAMP ${timestamps} WHERE id = ?`)
+    .run(nextStatus, score, remarks, nextStatus, req.user.id, id);
   audit(req.user.id, `status_${nextStatus}`, id);
   const updated = db.prepare(`${ticketSelect} WHERE t.id = ?`).get(id);
   broadcastUpdate("status_changed", { ticketId: id, panelId: ticket.panel_id, status: nextStatus });
+  res.json({ ticket: mapTicket(updated) });
+});
+
+app.patch("/api/tickets/:id/interview", authRequired, allowRoles("admin", "panel"), (req, res) => {
+  const id = Number(req.params.id);
+  const ticket = db.prepare(`${ticketSelect} WHERE t.id = ?`).get(id);
+  if (!ticket) return res.status(404).json({ error: "Ticket not found." });
+  if (!canAccessPanel(req.user, ticket.panel_id)) return res.status(403).json({ error: "You can only score candidates assigned to your panel." });
+  if (!["in_interview", "completed"].includes(ticket.status)) return res.status(409).json({ error: "Start the interview before saving a score." });
+  const score = Number(req.body.score);
+  const remarks = String(req.body.remarks || "").trim();
+  if (!Number.isInteger(score) || score < 1 || score > 10) return res.status(400).json({ error: "Score must be a whole number from 1 to 10." });
+  if (remarks.length > 2000) return res.status(400).json({ error: "Remarks must be 2,000 characters or fewer." });
+  db.prepare("UPDATE tickets SET interview_score = ?, interview_remarks = ?, interviewed_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+    .run(score, remarks, req.user.id, id);
+  audit(req.user.id, "interview_scored", id, { score });
+  const updated = db.prepare(`${ticketSelect} WHERE t.id = ?`).get(id);
+  broadcastUpdate("interview_scored", { ticketId: id, panelId: ticket.panel_id });
   res.json({ ticket: mapTicket(updated) });
 });
 

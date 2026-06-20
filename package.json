@@ -1,6 +1,6 @@
 {
   "name": "banoqabil-interview-queue",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "private": true,
   "description": "Offline-first interview ticket and panel queue system for Bano Qabil Incubation",
   "type": "module",
@@ -11,8 +11,10 @@
     "dev:client": "vite",
     "build": "vite build",
     "start": "cross-env NODE_ENV=production node server/index.js",
-    "desktop": "npm run build && cross-env NODE_ENV=production electron .",
-    "dist:win": "npm run build && electron-builder --win nsis",
+    "desktop": "npm run build && npm run rebuild:electron && cross-env NODE_ENV=production electron . && npm run rebuild:node",
+    "rebuild:node": "npm rebuild better-sqlite3",
+    "rebuild:electron": "electron-rebuild -f -w better-sqlite3",
+    "dist:win": "npm run build && npm run rebuild:electron && electron-builder --win nsis --config.npmRebuild=false && npm run rebuild:node",
     "test": "node --test tests/*.test.js"
   },
   "dependencies": {

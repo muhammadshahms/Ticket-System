@@ -2,10 +2,10 @@ import React, { useEffect, useState } from "react";
 import ReactDOM from "react-dom/client";
 import { io } from "socket.io-client";
 import {
-  ArrowRight, Check, CheckCircle2, ChevronRight, Clock3, Copy, DoorOpen,
-  Hash, LockKeyhole, LogOut, Monitor, Pencil, Phone, Play, Plus, Power,
-  Printer, Save, Search, ShieldCheck, SkipForward, Sparkles, Ticket,
-  UserRound, UsersRound, Volume2, Wifi
+  ArrowRight, Check, CheckCircle2, ChevronRight, Clock3, DoorOpen, Download,
+  FileSpreadsheet, Hash, LockKeyhole, LogOut, MessageSquare, Monitor, Pencil,
+  Phone, Play, Plus, Power, Printer, RefreshCw, Save, Search, ShieldCheck,
+  SkipForward, Sparkles, Star, Ticket, Trash2, UserRound, UsersRound, Volume2, Wifi
 } from "lucide-react";
 import bqLogo from "../assets/banoqabil-logo.png";
 import { OFFICIAL_BANOQABIL_COURSES } from "./banoqabilCourses.js";
@@ -45,6 +45,31 @@ const DEFAULT_SUPER_ADMIN = {
   username: "admin",
   password: "BanoQabil@2026"
 };
+
+const localDate = () => {
+  const now = new Date();
+  return new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
+};
+
+async function downloadExport(date, format) {
+  const token = localStorage.getItem("bq_token");
+  const response = await fetch(`/api/exports/tickets?date=${encodeURIComponent(date)}&format=${format}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {}
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.error || "Could not export candidate data.");
+  }
+  const blob = await response.blob();
+  const href = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = href;
+  link.download = `banoqabil-candidates-${date}.${format}`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(href);
+}
 
 function BrandLogo({ className = "" }) {
   return <img className={`bq-logo ${className}`} src={bqLogo} alt="Bano Qabil" />;
@@ -136,17 +161,47 @@ function Login({ onLogin }) {
   </main>;
 }
 
+function PasswordDialog({ user, onClose }) {
+  const [form, setForm] = useState({ currentPassword: "", newPassword: "", confirmPassword: "" });
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const submit = async (event) => {
+    event.preventDefault(); setError("");
+    if (form.newPassword !== form.confirmPassword) return setError("New passwords do not match.");
+    setBusy(true);
+    try {
+      await api("/auth/password", { method: "PATCH", body: JSON.stringify(form) });
+      window.alert("Password changed successfully.");
+      onClose();
+    } catch (err) { setError(err.message); } finally { setBusy(false); }
+  };
+  return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Change password">
+    <form className="form-dialog" onSubmit={submit}>
+      <button type="button" className="dialog-close" onClick={onClose}>×</button>
+      <div className="eyebrow">Account security</div><h2>Change password</h2><p className="muted">Enter your current password, then choose a new one.</p>
+      <label>Current password<input required autoFocus type="password" autoComplete="current-password" value={form.currentPassword} onChange={(event) => setForm({ ...form, currentPassword: event.target.value })} /></label>
+      <label>New password<input required minLength={user.role === "reception" ? 8 : 6} type="password" autoComplete="new-password" value={form.newPassword} onChange={(event) => setForm({ ...form, newPassword: event.target.value })} /></label>
+      <label>Confirm new password<input required type="password" autoComplete="new-password" value={form.confirmPassword} onChange={(event) => setForm({ ...form, confirmPassword: event.target.value })} /></label>
+      {error && <div className="form-error">{error}</div>}
+      <div className="dialog-actions"><button type="button" className="button secondary" onClick={onClose}>Cancel</button><button className="button primary" disabled={busy}>{busy ? "Changing…" : "Change password"}</button></div>
+    </form>
+  </div>;
+}
+
 function Shell({ user, onLogout, children, connection }) {
+  const [passwordOpen, setPasswordOpen] = useState(false);
   return <div className="app-shell">
     <header className="topbar">
       <div className="topbar-brand"><span><BrandLogo /></span><div>Bano Qabil Ticket System<small>Made by Bano Qabil Incubation</small></div></div>
       <div className="topbar-right">
         {connection && <div className="network-chip"><Wifi size={15} /><span>{connection}</span></div>}
         <div className="user-chip"><div>{user.displayName?.charAt(0)}</div><span>{user.displayName}<small>{user.role === "panel" ? (user.panelName || `Panel ${user.panelId}`) : user.role === "admin" ? "Super Admin" : user.role}</small></span></div>
+        {user.role !== "admin" && <button className="icon-button" title="Change password" onClick={() => setPasswordOpen(true)}><LockKeyhole size={18} /></button>}
         <button className="icon-button" title="Log out" onClick={onLogout}><LogOut size={19} /></button>
       </div>
     </header>
     {children}
+    {passwordOpen && <PasswordDialog user={user} onClose={() => setPasswordOpen(false)} />}
   </div>;
 }
 
@@ -215,14 +270,82 @@ function RegistrationForm({ panels, onCreated, setToast }) {
   </form>;
 }
 
-function QueueTable({ tickets }) {
+function DataExport({ date, onDateChange, setToast }) {
+  const [busy, setBusy] = useState("");
+  const run = async (format) => {
+    setBusy(format);
+    try {
+      await downloadExport(date, format);
+      setToast?.({ message: `${format === "xls" ? "Excel" : "CSV"} export downloaded for ${date}.` });
+    } catch (err) { setToast?.({ type: "error", message: err.message }); } finally { setBusy(""); }
+  };
+  return <div className="export-controls">
+    <label>Event date<input type="date" value={date} onChange={(event) => onDateChange(event.target.value)} /></label>
+    <button className="button secondary" disabled={Boolean(busy)} onClick={() => run("csv")}><Download size={17} />{busy === "csv" ? "Exporting…" : "CSV"}</button>
+    <button className="button secondary" disabled={Boolean(busy)} onClick={() => run("xls")}><FileSpreadsheet size={17} />{busy === "xls" ? "Exporting…" : "Excel"}</button>
+  </div>;
+}
+
+function CandidateEditor({ ticket, panels, onClose, onSaved, onDeleted, setToast }) {
+  const [form, setForm] = useState({ fullName: ticket.fullName, phone: ticket.phone, banoqabilId: ticket.banoqabilId || "", course: ticket.course, panelId: String(ticket.panelId) });
+  const [busy, setBusy] = useState(false);
+  const editableQueue = ["waiting", "skipped"].includes(ticket.status);
+  const panelOptions = panels.some((panel) => Number(panel.id) === Number(ticket.panelId)) ? panels : [{ id: ticket.panelId, name: ticket.panelName }, ...panels];
+  const save = async (event) => {
+    event.preventDefault();
+    const reassigned = Number(form.panelId) !== Number(ticket.panelId);
+    if (reassigned && !window.confirm(`Move ${ticket.fullName} to another panel? A new token will be issued.`)) return;
+    setBusy(true);
+    try {
+      const result = await api(`/tickets/${ticket.id}`, { method: "PATCH", body: JSON.stringify(form) });
+      setToast({ message: reassigned ? `${result.ticket.tokenCode} issued after reassignment.` : "Candidate details updated." });
+      onSaved(result.ticket, reassigned);
+    } catch (err) { setToast({ type: "error", message: err.message }); } finally { setBusy(false); }
+  };
+  const regenerate = async () => {
+    if (!window.confirm(`Regenerate ${ticket.tokenCode}? The old token will no longer be used.`)) return;
+    setBusy(true);
+    try {
+      const result = await api(`/tickets/${ticket.id}/regenerate`, { method: "POST" });
+      setToast({ message: `Fresh token ${result.ticket.tokenCode} generated.` });
+      onSaved(result.ticket, true);
+    } catch (err) { setToast({ type: "error", message: err.message }); } finally { setBusy(false); }
+  };
+  const remove = async () => {
+    if (!window.confirm(`Delete ${ticket.fullName} (${ticket.tokenCode})? This cannot be undone.`)) return;
+    setBusy(true);
+    try {
+      await api(`/tickets/${ticket.id}`, { method: "DELETE" });
+      setToast({ message: `${ticket.tokenCode} deleted.` }); onDeleted();
+    } catch (err) { setToast({ type: "error", message: err.message }); } finally { setBusy(false); }
+  };
+  return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Edit candidate">
+    <form className="form-dialog candidate-dialog" onSubmit={save}>
+      <button type="button" className="dialog-close" onClick={onClose}>×</button>
+      <div className="eyebrow">{ticket.tokenCode}</div><h2>Edit candidate</h2><p className="muted">Changing the panel automatically issues the next token in that queue.</p>
+      <div className="form-grid">
+        <label className="span-2">Candidate name<input required value={form.fullName} onChange={(event) => setForm({ ...form, fullName: event.target.value })} /></label>
+        <label>Phone number<input required value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} /></label>
+        <label>Bano Qabil ID<input value={form.banoqabilId} onChange={(event) => setForm({ ...form, banoqabilId: event.target.value })} /></label>
+        <label>Course<input required list="banoqabil-course-list" value={form.course} onChange={(event) => setForm({ ...form, course: event.target.value })} /></label>
+        <label>Assigned panel<select disabled={!editableQueue} value={form.panelId} onChange={(event) => setForm({ ...form, panelId: event.target.value })}>{panelOptions.map((panel) => <option key={panel.id} value={panel.id}>{panel.name}</option>)}</select></label>
+      </div>
+      {!editableQueue && <div className="form-note">This candidate is active or completed, so panel reassignment and deletion are locked.</div>}
+      <div className="dialog-footer split"><div><button type="button" className="button danger-quiet" disabled={busy || !editableQueue} onClick={remove}><Trash2 size={16} /> Delete</button><button type="button" className="button secondary" disabled={busy || !editableQueue} onClick={regenerate}><RefreshCw size={16} /> Regenerate</button></div><div><button type="button" className="button secondary" onClick={onClose}>Cancel</button><button className="button primary" disabled={busy}><Save size={16} /> Save</button></div></div>
+    </form>
+  </div>;
+}
+
+function QueueTable({ tickets, panels, date, onDateChange, onChanged, onPrint, setToast }) {
   const [query, setQuery] = useState("");
+  const [editing, setEditing] = useState(null);
   const filtered = tickets.filter((ticket) => [ticket.tokenCode, ticket.fullName, ticket.phone, ticket.course].some((value) => value?.toLowerCase().includes(query.toLowerCase())));
   return <section className="table-card">
-    <div className="table-head"><div><h3>Today’s candidates</h3><p>{tickets.length} registrations</p></div><div className="search"><Search size={17} /><input placeholder="Search name, token, phone…" value={query} onChange={(e) => setQuery(e.target.value)} /></div></div>
-    <div className="table-scroll"><table><thead><tr><th>Token</th><th>Candidate</th><th>Course</th><th>Panel</th><th>Status</th><th>Time</th></tr></thead>
-      <tbody>{filtered.length ? filtered.map((ticket) => <tr key={ticket.id}><td><strong className="token-mini">{ticket.tokenCode}</strong></td><td><strong>{ticket.fullName}</strong><small>{ticket.phone}</small></td><td>{ticket.course}</td><td>{ticket.panelName}</td><td><span className={`status ${ticket.status}`}>{statusLabels[ticket.status]}</span></td><td>{formatTime(ticket.createdAt)}</td></tr>) : <tr><td colSpan="6" className="empty-cell">No candidates found.</td></tr>}</tbody>
+    <div className="table-head"><div><h3>Candidates · {date}</h3><p>{tickets.length} registrations</p></div><div className="table-tools"><DataExport date={date} onDateChange={onDateChange} setToast={setToast} /><div className="search"><Search size={17} /><input placeholder="Search name, token, phone…" value={query} onChange={(e) => setQuery(e.target.value)} /></div></div></div>
+    <div className="table-scroll"><table><thead><tr><th>Token</th><th>Candidate</th><th>Course</th><th>Panel</th><th>Status</th><th>Score</th><th>Time</th><th>Actions</th></tr></thead>
+      <tbody>{filtered.length ? filtered.map((ticket) => <tr key={ticket.id}><td><strong className="token-mini">{ticket.tokenCode}</strong></td><td><strong>{ticket.fullName}</strong><small>{ticket.phone}</small></td><td>{ticket.course}</td><td>{ticket.panelName}</td><td><span className={`status ${ticket.status}`}>{statusLabels[ticket.status]}</span></td><td>{ticket.interviewScore ? `${ticket.interviewScore}/10` : "—"}</td><td>{formatTime(ticket.createdAt)}</td><td><div className="row-actions"><button title="Print ticket" onClick={() => onPrint(ticket)}><Printer size={15} /></button><button title="Edit candidate" onClick={() => setEditing(ticket)}><Pencil size={15} /></button></div></td></tr>) : <tr><td colSpan="8" className="empty-cell">No candidates found.</td></tr>}</tbody>
     </table></div>
+    {editing && <CandidateEditor ticket={editing} panels={panels} onClose={() => setEditing(null)} onSaved={(updated, shouldPrint) => { setEditing(null); onChanged(); if (shouldPrint) onPrint(updated); }} onDeleted={() => { setEditing(null); onChanged(); }} setToast={setToast} />}
   </section>;
 }
 
@@ -230,10 +353,11 @@ function ReceptionDashboard({ user, onLogout, version, refresh }) {
   const [data, setData] = useState({ panels: [], tickets: [], stats: {}, byPanel: [], network: [] });
   const [ticket, setTicket] = useState(null);
   const [toast, setToast] = useState(null);
+  const [eventDate, setEventDate] = useState(localDate());
   useEffect(() => { window.scrollTo(0, 0); }, []);
   useEffect(() => {
-    Promise.all([api("/panels"), api("/tickets"), api("/stats"), api("/network")]).then(([p, t, s, n]) => setData({ panels: p.panels, tickets: t.tickets, stats: s.stats, byPanel: s.byPanel, network: n.addresses })).catch(console.error);
-  }, [version]);
+    Promise.all([api("/panels"), api(`/tickets?date=${eventDate}`), api("/stats"), api("/network")]).then(([p, t, s, n]) => setData({ panels: p.panels, tickets: t.tickets, stats: s.stats, byPanel: s.byPanel, network: n.addresses })).catch(console.error);
+  }, [version, eventDate]);
   const created = (newTicket) => { setTicket(newTicket); refresh(); };
   const copyDisplay = async () => {
     const url = `${data.network[0] || window.location.origin}/?display=1`;
@@ -255,7 +379,7 @@ function ReceptionDashboard({ user, onLogout, version, refresh }) {
           <div className="balance-note"><Sparkles size={18} /><span><strong>Smart balancing is on</strong><small>Auto-assigned candidates go to the shortest active queue.</small></span></div>
         </aside>
       </section>
-      <QueueTable tickets={data.tickets} />
+      <QueueTable tickets={data.tickets} panels={data.panels} date={eventDate} onDateChange={setEventDate} onChanged={refresh} onPrint={setTicket} setToast={setToast} />
     </main>
     <TicketPrint ticket={ticket} onClose={() => setTicket(null)} />
     <Toast toast={toast} onClose={() => setToast(null)} />
@@ -269,6 +393,7 @@ function ManagedPanel({ panel, onUpdated, setToast }) {
   useEffect(() => setName(panel.name), [panel.name]);
 
   const updatePanel = async (changes, success) => {
+    if (changes.active === false && !window.confirm(`Deactivate ${panel.name}? Its login will stop working.`)) return;
     setBusy(true);
     try {
       await api(`/admin/panels/${panel.id}`, { method: "PATCH", body: JSON.stringify(changes) });
@@ -277,6 +402,7 @@ function ManagedPanel({ panel, onUpdated, setToast }) {
   };
   const resetPassword = async () => {
     if (password.length < 6) { setToast({ type: "error", message: "Password must be at least 6 characters." }); return; }
+    if (!window.confirm(`Reset ${panel.name}'s login password? Existing panel sessions will be signed out.`)) return;
     setBusy(true);
     try {
       await api(`/admin/panels/${panel.id}/password`, { method: "PATCH", body: JSON.stringify({ password }) });
@@ -304,6 +430,7 @@ function ManagedReception({ reception, onUpdated, setToast }) {
   const [busy, setBusy] = useState(false);
   useEffect(() => setDisplayName(reception.display_name), [reception.display_name]);
   const updateReception = async (changes, success) => {
+    if (changes.active === false && !window.confirm(`Deactivate ${reception.display_name}? This Reception will be signed out.`)) return;
     setBusy(true);
     try {
       await api(`/admin/receptions/${reception.id}`, { method: "PATCH", body: JSON.stringify(changes) });
@@ -312,6 +439,7 @@ function ManagedReception({ reception, onUpdated, setToast }) {
   };
   const resetPassword = async () => {
     if (password.length < 8) { setToast({ type: "error", message: "Password must be at least 8 characters." }); return; }
+    if (!window.confirm(`Reset ${reception.display_name}'s password? Existing sessions will be signed out.`)) return;
     setBusy(true);
     try {
       await api(`/admin/receptions/${reception.id}/password`, { method: "PATCH", body: JSON.stringify({ password }) });
@@ -338,6 +466,7 @@ function SuperAdminDashboard({ user, onLogout, version, refresh }) {
   const [toast, setToast] = useState(null);
   const [busy, setBusy] = useState(false);
   const [receptionBusy, setReceptionBusy] = useState(false);
+  const [exportDate, setExportDate] = useState(localDate());
   useEffect(() => { window.scrollTo(0, 0); }, []);
   useEffect(() => {
     Promise.all([api("/admin/panels"), api("/admin/receptions")])
@@ -370,6 +499,7 @@ function SuperAdminDashboard({ user, onLogout, version, refresh }) {
         <StatCard icon={UserRound} label="Reception desks" value={activeReceptions} tone="blue" detail="Active login accounts" />
         <StatCard icon={Clock3} label="Waiting now" value={waiting} tone="amber" detail="Across active queues" />
       </section>
+      <section className="export-card"><div><div className="eyebrow">Post-event data</div><h2>Export candidate records</h2><p>Includes candidate details, panel, status, score, remarks, and interview timestamps.</p></div><DataExport date={exportDate} onDateChange={setExportDate} setToast={setToast} /></section>
       <section className="admin-create-card">
         <div className="section-heading"><div><div className="eyebrow">Add workspace</div><h2>Create a new panel</h2><p>The panel receives its own queue and interviewer login immediately.</p></div><div className="step-badge"><Plus size={17} /></div></div>
         <form onSubmit={createPanel} className="admin-create-form">
@@ -412,19 +542,34 @@ function PanelDashboard({ user, onLogout, version, refresh }) {
   const [data, setData] = useState({ tickets: [], stats: {} });
   const [toast, setToast] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [score, setScore] = useState("");
+  const [remarks, setRemarks] = useState("");
   useEffect(() => { window.scrollTo(0, 0); }, []);
   useEffect(() => { Promise.all([api(`/tickets?panelId=${user.panelId}`), api("/stats")]).then(([t, s]) => setData({ tickets: t.tickets, stats: s.stats })).catch(console.error); }, [version, user.panelId]);
   const current = data.tickets.find((ticket) => ["called", "in_interview"].includes(ticket.status));
   const waiting = data.tickets.filter((ticket) => ticket.status === "waiting").sort((a, b) => a.id - b.id);
   const completed = data.tickets.filter((ticket) => ticket.status === "completed");
+  useEffect(() => {
+    setScore(current?.interviewScore ? String(current.interviewScore) : "");
+    setRemarks(current?.interviewRemarks || "");
+  }, [current?.id]);
   const act = async (action, status) => {
+    if (status === "skipped" && !window.confirm(`Skip ${current.fullName}? They can be returned to the waiting queue later.`)) return;
+    if (status === "completed" && !window.confirm(`Complete ${current.fullName}'s interview with a score of ${score}/10?`)) return;
     setBusy(true);
     try {
       const result = action === "call" ? await api(`/panels/${user.panelId}/call-next`, { method: "POST" })
-        : await api(`/tickets/${current.id}/status`, { method: "PATCH", body: JSON.stringify({ status }) });
+        : await api(`/tickets/${current.id}/status`, { method: "PATCH", body: JSON.stringify({ status, score, remarks }) });
       if (action === "call") speakTicket(result.ticket);
       setToast({ message: action === "call" ? `${result.ticket.tokenCode} has been called.` : `Candidate marked ${statusLabels[status].toLowerCase()}.` });
       refresh();
+    } catch (err) { setToast({ type: "error", message: err.message }); } finally { setBusy(false); }
+  };
+  const saveInterview = async () => {
+    setBusy(true);
+    try {
+      await api(`/tickets/${current.id}/interview`, { method: "PATCH", body: JSON.stringify({ score, remarks }) });
+      setToast({ message: "Score and remarks saved." }); refresh();
     } catch (err) { setToast({ type: "error", message: err.message }); } finally { setBusy(false); }
   };
   return <Shell user={user} onLogout={onLogout} connection="Live queue">
@@ -436,10 +581,12 @@ function PanelDashboard({ user, onLogout, version, refresh }) {
           {current ? <div className="current-body">
             <div className="giant-token">{current.tokenCode}</div><h2>{current.fullName}</h2><p>{current.course}</p>
             <div className="candidate-details"><span><Hash size={16} />{current.banoqabilId || "No BQ ID"}</span><span><Clock3 size={16} />Called {formatTime(current.calledAt)}</span></div>
+            {current.status === "in_interview" && <div className="interview-form"><label><Star size={17} /> Interview score<select value={score} onChange={(event) => setScore(event.target.value)}><option value="">Choose 1–10</option>{Array.from({ length: 10 }, (_, index) => index + 1).map((value) => <option key={value} value={value}>{value} / 10</option>)}</select></label><label><MessageSquare size={17} /> Remarks<textarea maxLength="2000" placeholder="Strengths, observations, recommendation…" value={remarks} onChange={(event) => setRemarks(event.target.value)} /></label><small>{remarks.length}/2000</small></div>}
             <div className="current-actions">
               <button className="button secondary" onClick={() => speakTicket(current)}><Volume2 size={18} /> Call again</button>
               {current.status === "called" && <button className="button primary" disabled={busy} onClick={() => act("status", "in_interview")}><Play size={18} /> Start interview</button>}
-              {current.status === "in_interview" && <button className="button success" disabled={busy} onClick={() => act("status", "completed")}><Check size={19} /> Complete & finish</button>}
+              {current.status === "in_interview" && <button className="button secondary" disabled={busy || !score} onClick={saveInterview}><Save size={18} /> Save notes</button>}
+              {current.status === "in_interview" && <button className="button success" disabled={busy || !score} onClick={() => act("status", "completed")}><Check size={19} /> Complete & finish</button>}
               <button className="button danger-quiet" disabled={busy} onClick={() => act("status", "skipped")}><SkipForward size={18} /> Skip</button>
             </div>
           </div> : <div className="current-empty"><div><UserRound size={42} /></div><h2>Ready for the next candidate</h2><p>{waiting.length ? `${waiting.length} candidate${waiting.length === 1 ? " is" : "s are"} waiting.` : "Your queue is clear for now."}</p><button className="button primary large" disabled={busy || !waiting.length} onClick={() => act("call")}><Volume2 size={20} /> Call next candidate</button></div>}
@@ -449,7 +596,7 @@ function PanelDashboard({ user, onLogout, version, refresh }) {
           <div className="waiting-list">{waiting.length ? waiting.map((ticket, index) => <div className="waiting-item" key={ticket.id}><span className="queue-pos">{index + 1}</span><div><strong>{ticket.tokenCode}</strong><span>{ticket.fullName}</span><small>{ticket.course}</small></div><Clock3 size={17} /></div>) : <div className="mini-empty"><CheckCircle2 size={28} /><span>No one waiting</span></div>}</div>
         </aside>
       </section>
-      <section className="recent-completed"><div className="table-head"><div><h3>Completed today</h3><p>Your latest finished interviews</p></div></div><div className="completion-strip">{completed.slice(0, 6).map((ticket) => <div key={ticket.id}><CheckCircle2 size={17} /><span><strong>{ticket.tokenCode}</strong><small>{ticket.fullName}</small></span><time>{formatTime(ticket.completedAt)}</time></div>)}{!completed.length && <p className="muted">Completed interviews will appear here.</p>}</div></section>
+      <section className="recent-completed"><div className="table-head"><div><h3>Completed today</h3><p>Your latest finished interviews</p></div></div><div className="completion-strip">{completed.slice(0, 6).map((ticket) => <div key={ticket.id}><CheckCircle2 size={17} /><span><strong>{ticket.tokenCode}</strong><small>{ticket.fullName}</small></span><b>{ticket.interviewScore ? `${ticket.interviewScore}/10` : "—"}</b><time>{formatTime(ticket.completedAt)}</time></div>)}{!completed.length && <p className="muted">Completed interviews will appear here.</p>}</div></section>
     </main>
     <Toast toast={toast} onClose={() => setToast(null)} />
   </Shell>;
@@ -483,7 +630,11 @@ function App() {
       api("/auth/me").then(({ user: found }) => setUser(found)).catch(() => localStorage.removeItem("bq_token")).finally(() => setChecking(false));
     }).catch(() => setChecking(false));
   }, [isDisplay]);
-  const logout = async () => { try { await api("/auth/logout", { method: "POST" }); } catch {} localStorage.removeItem("bq_token"); setUser(null); };
+  const logout = async () => {
+    if (!window.confirm("Log out of the Bano Qabil Ticket System?")) return;
+    try { await api("/auth/logout", { method: "POST" }); } catch {}
+    localStorage.removeItem("bq_token"); setUser(null);
+  };
   if (isDisplay) return <DisplayBoard />;
   if (checking) return <div className="loading-screen"><BrandLogo /><span>Loading Bano Qabil Ticket System…</span></div>;
   if (needsSetup) return <SetupWizard onComplete={(createdUser) => { setNeedsSetup(false); setUser(createdUser); }} />;
