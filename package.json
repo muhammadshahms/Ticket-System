@@ -1,6 +1,6 @@
 {
   "name": "banoqabil-interview-queue",
-  "version": "1.6.0",
+  "version": "1.8.0",
   "private": true,
   "description": "Offline-first interview ticket and panel queue system for Bano Qabil Incubation",
   "type": "module",
@@ -22,6 +22,7 @@
     "cors": "^2.8.5",
     "express": "^5.1.0",
     "lucide-react": "^0.468.0",
+    "qrcode": "^1.5.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "socket.io": "^4.8.1",
@@ -39,7 +40,9 @@
   "build": {
     "appId": "pk.banoqabil.interviewqueue",
     "productName": "Bano Qabil Ticket System",
-    "directories": {"output": "release"},
+    "directories": {
+      "output": "release"
+    },
     "files": [
       "dist/**/*",
       "assets/**/*",
@@ -47,8 +50,16 @@
       "electron/**/*",
       "package.json"
     ],
-    "asarUnpack": ["node_modules/better-sqlite3/**/*"],
-    "win": {"target": "nsis", "icon": "assets/banoqabil-logo.png"},
-    "nsis": {"oneClick": false, "allowToChangeInstallationDirectory": true}
+    "asarUnpack": [
+      "node_modules/better-sqlite3/**/*"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/banoqabil-logo.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }

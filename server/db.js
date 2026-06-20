@@ -30,6 +30,25 @@ export function verifyPassword(password, stored) {
   return crypto.timingSafeEqual(actual, Buffer.from(expected, "hex"));
 }
 
+export function generateAccessSlug(role, label) {
+  const ignoredWords = role === "panel"
+    ? new Set(["panel", "interviewer"])
+    : new Set(["reception", "desk", "counter"]);
+  const words = String(label || "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter((word) => word && !ignoredWords.has(word));
+  const root = `${role}-${words.join("-") || "account"}`.slice(0, 70).replace(/-+$/g, "");
+  let slug = root;
+  let suffix = 2;
+  while (db.prepare("SELECT 1 FROM users WHERE access_slug = ? COLLATE NOCASE").get(slug)) slug = `${root}-${suffix++}`;
+  return slug;
+}
+
 export function initDatabase() {
   db.exec(`
     CREATE TABLE IF NOT EXISTS panels (
@@ -100,6 +119,25 @@ export function initDatabase() {
   addTicketColumn("interview_score", "INTEGER");
   addTicketColumn("interview_remarks", "TEXT");
   addTicketColumn("interviewed_by", "INTEGER REFERENCES users(id)");
+
+  const userColumns = new Set(db.prepare("PRAGMA table_info(users)").all().map((column) => column.name));
+  if (!userColumns.has("access_slug")) {
+    try { db.exec("ALTER TABLE users ADD COLUMN access_slug TEXT COLLATE NOCASE"); }
+    catch (error) { if (!String(error.message).includes("duplicate column name")) throw error; }
+  }
+  db.transaction(() => {
+    const accounts = db.prepare(`
+      SELECT u.id, u.role, u.display_name, p.name AS panel_name
+      FROM users u LEFT JOIN panels p ON p.id = u.panel_id
+      WHERE u.role IN ('panel', 'reception') AND (u.access_slug IS NULL OR u.access_slug = '')
+      ORDER BY u.id
+    `).all();
+    const updateSlug = db.prepare("UPDATE users SET access_slug = ? WHERE id = ?");
+    for (const account of accounts) {
+      updateSlug.run(generateAccessSlug(account.role, account.role === "panel" ? account.panel_name : account.display_name), account.id);
+    }
+  })();
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_access_slug ON users(access_slug COLLATE NOCASE)");
 
   db.prepare("DELETE FROM sessions WHERE expires_at < datetime('now')").run();
 

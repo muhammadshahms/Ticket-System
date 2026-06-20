@@ -2,11 +2,12 @@ import React, { useEffect, useState } from "react";
 import ReactDOM from "react-dom/client";
 import { io } from "socket.io-client";
 import {
-  ArrowRight, Check, CheckCircle2, ChevronRight, Clock3, DoorOpen, Download,
+  AlertTriangle, ArrowRight, Check, CheckCircle2, ChevronLeft, ChevronRight, Clock3, Copy, DoorOpen, Download,
   FileSpreadsheet, Hash, LockKeyhole, LogOut, MessageSquare, Monitor, Pencil,
-  Phone, Play, Plus, Power, Printer, RefreshCw, Save, Search, ShieldCheck,
+  Link2, Phone, Play, Plus, Power, Printer, QrCode, RefreshCw, Save, Search, ShieldCheck,
   SkipForward, Sparkles, Star, Ticket, Trash2, UserRound, UsersRound, Volume2, Wifi
 } from "lucide-react";
+import QRCode from "qrcode";
 import bqLogo from "../assets/banoqabil-logo.png";
 import { OFFICIAL_BANOQABIL_COURSES } from "./banoqabilCourses.js";
 import "./styles.css";
@@ -51,9 +52,11 @@ const localDate = () => {
   return new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
 };
 
-async function downloadExport(date, format) {
+async function downloadExport(date, format, filters = {}) {
   const token = localStorage.getItem("bq_token");
-  const response = await fetch(`/api/exports/tickets?date=${encodeURIComponent(date)}&format=${format}`, {
+  const parameters = new URLSearchParams({ date, format });
+  for (const [key, value] of Object.entries(filters)) if (value !== "" && value !== undefined && value !== null) parameters.set(key, value);
+  const response = await fetch(`/api/exports/tickets?${parameters}`, {
     headers: token ? { Authorization: `Bearer ${token}` } : {}
   });
   if (!response.ok) {
@@ -69,6 +72,18 @@ async function downloadExport(date, format) {
   link.click();
   link.remove();
   URL.revokeObjectURL(href);
+}
+
+async function copyText(value) {
+  if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(value);
+  const field = document.createElement("textarea");
+  field.value = value;
+  field.style.position = "fixed";
+  field.style.opacity = "0";
+  document.body.appendChild(field);
+  field.select();
+  document.execCommand("copy");
+  field.remove();
 }
 
 function BrandLogo({ className = "" }) {
@@ -122,15 +137,16 @@ function SetupWizard({ onComplete }) {
   </main>;
 }
 
-function Login({ onLogin }) {
-  const [form, setForm] = useState({ username: "", password: "" });
+function Login({ onLogin, scope = null, onUseRegular }) {
+  const [form, setForm] = useState({ username: scope?.username || "", password: "" });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
   const submit = async (event) => {
     event.preventDefault(); setError(""); setLoading(true);
     try {
-      const result = await api("/auth/login", { method: "POST", body: JSON.stringify(form) });
+      const body = scope ? { slug: scope.slug, password: form.password } : form;
+      const result = await api("/auth/login", { method: "POST", body: JSON.stringify(body) });
       localStorage.setItem("bq_token", result.token);
       onLogin(result.user);
     } catch (err) { setError(err.message); } finally { setLoading(false); }
@@ -139,23 +155,24 @@ function Login({ onLogin }) {
   return <main className="login-page">
     <section className="login-brand">
       <div className="brand-mark bq-brand-mark"><BrandLogo /></div>
-      <div className="eyebrow light">Bano Qabil Ticket System</div>
-      <h1>Interviews, flowing<br />without the chaos.</h1>
-      <p>A focused queue system for registration desks and interview panels—fast, fair, and live.</p>
-      <div className="brand-stat"><UsersRound size={22} /><span><strong>Flexible panels</strong><small>Create and name every interview queue</small></span></div>
+      <div className="eyebrow light">{scope ? `${scope.role} access link` : "Bano Qabil Ticket System"}</div>
+      <h1>{scope ? <>{scope.displayName}<br />is ready.</> : <>Interviews, flowing<br />without the chaos.</>}</h1>
+      <p>{scope ? "You opened a dedicated workspace link. Enter its password to continue securely." : "A focused queue system for registration desks and interview panels—fast, fair, and live."}</p>
+      <div className="brand-stat">{scope ? <><Wifi size={22} /><span><strong>Same network required</strong><small>Stay connected to the host laptop’s Wi-Fi or hotspot</small></span></> : <><UsersRound size={22} /><span><strong>Flexible panels</strong><small>Create and name every interview queue</small></span></>}</div>
       <div className="made-by">Made by Bano Qabil Incubation</div>
     </section>
     <section className="login-panel">
       <form className="login-card" onSubmit={submit}>
         <div className="mobile-logo"><BrandLogo /> <span>Bano Qabil<small>Ticket System</small></span></div>
-        <div className="eyebrow">Secure access</div>
-        <h2>Welcome back</h2>
-        <p className="muted">Sign in to your assigned workspace.</p>
-        <div className="default-login-note"><ShieldCheck size={17} /><span>Super Admin: <strong>{DEFAULT_SUPER_ADMIN.username}</strong> / <strong>{DEFAULT_SUPER_ADMIN.password}</strong></span></div>
-        <label>Username<input required autoFocus autoComplete="username" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} /></label>
-        <label>Password<input required type="password" autoComplete="current-password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} /></label>
+        <div className="eyebrow">{scope ? `${scope.role} workspace` : "Secure access"}</div>
+        <h2>{scope ? scope.displayName : "Welcome back"}</h2>
+        <p className="muted">{scope ? "Your username is already selected. Enter the account password." : "Sign in to your assigned workspace."}</p>
+        {scope ? <div className="scoped-login-note"><QrCode size={18} /><span><strong>Dedicated account link</strong><small>Connected devices still need this account’s password.</small></span></div> : <div className="default-login-note"><ShieldCheck size={17} /><span>Super Admin: <strong>{DEFAULT_SUPER_ADMIN.username}</strong> / <strong>{DEFAULT_SUPER_ADMIN.password}</strong></span></div>}
+        <label>Username<input required readOnly={Boolean(scope)} autoFocus={!scope} autoComplete="username" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} /></label>
+        <label>Password<input required autoFocus={Boolean(scope)} type="password" autoComplete="current-password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} /></label>
         {error && <div className="form-error">{error}</div>}
-        <button className="button primary wide" disabled={loading}>{loading ? "Signing in…" : <>Sign in <ArrowRight size={18} /></>}</button>
+        <button className="button primary wide" disabled={loading}>{loading ? "Signing in…" : <>Open {scope ? scope.role : "workspace"} <ArrowRight size={18} /></>}</button>
+        {scope && <button type="button" className="regular-login-link" onClick={onUseRegular}>Use regular login instead</button>}
       </form>
     </section>
   </main>;
@@ -286,7 +303,7 @@ function DataExport({ date, onDateChange, setToast }) {
   </div>;
 }
 
-function CandidateEditor({ ticket, panels, onClose, onSaved, onDeleted, setToast }) {
+function CandidateEditor({ ticket, panels, onClose, onSaved, onDeleted, setToast, allowAnyDelete = false }) {
   const [form, setForm] = useState({ fullName: ticket.fullName, phone: ticket.phone, banoqabilId: ticket.banoqabilId || "", course: ticket.course, panelId: String(ticket.panelId) });
   const [busy, setBusy] = useState(false);
   const editableQueue = ["waiting", "skipped"].includes(ticket.status);
@@ -312,7 +329,13 @@ function CandidateEditor({ ticket, panels, onClose, onSaved, onDeleted, setToast
     } catch (err) { setToast({ type: "error", message: err.message }); } finally { setBusy(false); }
   };
   const remove = async () => {
-    if (!window.confirm(`Delete ${ticket.fullName} (${ticket.tokenCode})? This cannot be undone.`)) return;
+    if (allowAnyDelete) {
+      const confirmation = window.prompt(`Type ${ticket.tokenCode} to permanently delete ${ticket.fullName}.`);
+      if (confirmation !== ticket.tokenCode) {
+        if (confirmation !== null) setToast({ type: "error", message: `Deletion cancelled. Type ${ticket.tokenCode} exactly.` });
+        return;
+      }
+    } else if (!window.confirm(`Delete ${ticket.fullName} (${ticket.tokenCode})? This cannot be undone.`)) return;
     setBusy(true);
     try {
       await api(`/tickets/${ticket.id}`, { method: "DELETE" });
@@ -330,8 +353,8 @@ function CandidateEditor({ ticket, panels, onClose, onSaved, onDeleted, setToast
         <label>Course<input required list="banoqabil-course-list" value={form.course} onChange={(event) => setForm({ ...form, course: event.target.value })} /></label>
         <label>Assigned panel<select disabled={!editableQueue} value={form.panelId} onChange={(event) => setForm({ ...form, panelId: event.target.value })}>{panelOptions.map((panel) => <option key={panel.id} value={panel.id}>{panel.name}</option>)}</select></label>
       </div>
-      {!editableQueue && <div className="form-note">This candidate is active or completed, so panel reassignment and deletion are locked.</div>}
-      <div className="dialog-footer split"><div><button type="button" className="button danger-quiet" disabled={busy || !editableQueue} onClick={remove}><Trash2 size={16} /> Delete</button><button type="button" className="button secondary" disabled={busy || !editableQueue} onClick={regenerate}><RefreshCw size={16} /> Regenerate</button></div><div><button type="button" className="button secondary" onClick={onClose}>Cancel</button><button className="button primary" disabled={busy}><Save size={16} /> Save</button></div></div>
+      {!editableQueue && <div className="form-note">This candidate is active or completed, so panel reassignment and ticket regeneration are locked.{allowAnyDelete ? " Super Admin can still edit details or permanently delete the record." : ""}</div>}
+      <div className="dialog-footer split"><div><button type="button" className="button danger-quiet" disabled={busy || (!editableQueue && !allowAnyDelete)} onClick={remove}><Trash2 size={16} /> Delete</button><button type="button" className="button secondary" disabled={busy || !editableQueue} onClick={regenerate}><RefreshCw size={16} /> Regenerate</button></div><div><button type="button" className="button secondary" onClick={onClose}>Cancel</button><button className="button primary" disabled={busy}><Save size={16} /> Save</button></div></div>
     </form>
   </div>;
 }
@@ -346,6 +369,89 @@ function QueueTable({ tickets, panels, date, onDateChange, onChanged, onPrint, s
       <tbody>{filtered.length ? filtered.map((ticket) => <tr key={ticket.id}><td><strong className="token-mini">{ticket.tokenCode}</strong></td><td><strong>{ticket.fullName}</strong><small>{ticket.phone}</small></td><td>{ticket.course}</td><td>{ticket.panelName}</td><td><span className={`status ${ticket.status}`}>{statusLabels[ticket.status]}</span></td><td>{ticket.interviewScore ? `${ticket.interviewScore}/10` : "—"}</td><td>{formatTime(ticket.createdAt)}</td><td><div className="row-actions"><button title="Print ticket" onClick={() => onPrint(ticket)}><Printer size={15} /></button><button title="Edit candidate" onClick={() => setEditing(ticket)}><Pencil size={15} /></button></div></td></tr>) : <tr><td colSpan="8" className="empty-cell">No candidates found.</td></tr>}</tbody>
     </table></div>
     {editing && <CandidateEditor ticket={editing} panels={panels} onClose={() => setEditing(null)} onSaved={(updated, shouldPrint) => { setEditing(null); onChanged(); if (shouldPrint) onPrint(updated); }} onDeleted={() => { setEditing(null); onChanged(); }} setToast={setToast} />}
+  </section>;
+}
+
+function DeleteAllCandidatesDialog({ total, onClose, onDeleted, setToast }) {
+  const phrase = "DELETE ALL CANDIDATES";
+  const [confirmation, setConfirmation] = useState("");
+  const [busy, setBusy] = useState(false);
+  const submit = async (event) => {
+    event.preventDefault(); setBusy(true);
+    try {
+      const result = await api("/admin/candidates", { method: "DELETE", body: JSON.stringify({ confirmation }) });
+      setToast({ message: `${result.deleted} candidate record${result.deleted === 1 ? "" : "s"} permanently deleted.` });
+      onDeleted();
+    } catch (err) { setToast({ type: "error", message: err.message }); } finally { setBusy(false); }
+  };
+  return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Delete all candidate data">
+    <form className="form-dialog danger-dialog" onSubmit={submit}>
+      <button type="button" className="dialog-close" onClick={onClose}>×</button>
+      <div className="danger-icon"><AlertTriangle size={25} /></div><div className="eyebrow danger-text">Permanent danger zone</div><h2>Delete all candidate data?</h2>
+      <p className="muted">This permanently removes all <strong>{total}</strong> candidate records across every event date, including scores and remarks. Accounts and panels will remain.</p>
+      <div className="danger-callout">This action cannot be undone. Export a backup before continuing.</div>
+      <label>Type <strong>{phrase}</strong> to confirm<input required autoFocus autoComplete="off" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} /></label>
+      <div className="dialog-actions"><button type="button" className="button secondary" onClick={onClose}>Cancel</button><button className="button destructive" disabled={busy || confirmation !== phrase}><Trash2 size={17} />{busy ? "Deleting…" : "Delete all data"}</button></div>
+    </form>
+  </div>;
+}
+
+function AdminCandidateManager({ panels, version, refresh, setToast }) {
+  const [tickets, setTickets] = useState([]);
+  const [pagination, setPagination] = useState({ page: 1, pageSize: 20, total: 0, totalPages: 1 });
+  const [page, setPage] = useState(1);
+  const [filters, setFilters] = useState({ query: "", date: "", status: "", panelId: "" });
+  const [debouncedQuery, setDebouncedQuery] = useState("");
+  const [editing, setEditing] = useState(null);
+  const [printing, setPrinting] = useState(null);
+  const [deleteAllOpen, setDeleteAllOpen] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [exporting, setExporting] = useState("");
+  useEffect(() => { const timer = setTimeout(() => { setDebouncedQuery(filters.query); setPage(1); }, 300); return () => clearTimeout(timer); }, [filters.query]);
+  useEffect(() => {
+    let active = true;
+    const parameters = new URLSearchParams({ page: String(page), pageSize: "20" });
+    if (debouncedQuery) parameters.set("query", debouncedQuery);
+    if (filters.date) parameters.set("date", filters.date);
+    if (filters.status) parameters.set("status", filters.status);
+    if (filters.panelId) parameters.set("panelId", filters.panelId);
+    setLoading(true);
+    api(`/admin/candidates?${parameters}`).then((result) => {
+      if (!active) return;
+      setTickets(result.tickets); setPagination(result.pagination);
+      if (result.pagination.page !== page) setPage(result.pagination.page);
+    }).catch((err) => setToast({ type: "error", message: err.message })).finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [page, debouncedQuery, filters.date, filters.status, filters.panelId, version]);
+  const updateFilter = (key) => (event) => { setFilters((current) => ({ ...current, [key]: event.target.value })); if (key !== "query") setPage(1); };
+  const exportData = async (format) => {
+    setExporting(format);
+    try {
+      await downloadExport(filters.date || "all", format, { query: debouncedQuery, status: filters.status, panelId: filters.panelId });
+      setToast({ message: `${format === "xls" ? "Excel" : "CSV"} candidate export downloaded.` });
+    } catch (err) { setToast({ type: "error", message: err.message }); } finally { setExporting(""); }
+  };
+  const deleteTicket = async (ticket) => {
+    const confirmation = window.prompt(`Type ${ticket.tokenCode} to permanently delete ${ticket.fullName}.`);
+    if (confirmation !== ticket.tokenCode) {
+      if (confirmation !== null) setToast({ type: "error", message: `Deletion cancelled. Type ${ticket.tokenCode} exactly.` });
+      return;
+    }
+    try {
+      await api(`/tickets/${ticket.id}`, { method: "DELETE" });
+      setToast({ message: `${ticket.tokenCode} permanently deleted.` }); refresh();
+    } catch (err) { setToast({ type: "error", message: err.message }); }
+  };
+  const firstRecord = pagination.total ? (pagination.page - 1) * pagination.pageSize + 1 : 0;
+  const lastRecord = Math.min(pagination.page * pagination.pageSize, pagination.total);
+  return <section className="table-card admin-candidate-manager">
+    <div className="admin-candidate-head"><div><div className="eyebrow">Candidate database</div><h2>All candidate records</h2><p>Search, edit, export, or remove candidates across every event date.</p></div><div className="admin-data-actions"><button className="button secondary" disabled={Boolean(exporting)} onClick={() => exportData("csv")}><Download size={17} />{exporting === "csv" ? "Exporting…" : "CSV"}</button><button className="button secondary" disabled={Boolean(exporting)} onClick={() => exportData("xls")}><FileSpreadsheet size={17} />{exporting === "xls" ? "Exporting…" : "Excel"}</button><button className="button danger-quiet" disabled={!pagination.total} onClick={() => setDeleteAllOpen(true)}><Trash2 size={17} /> Delete all</button></div></div>
+    <div className="admin-candidate-filters"><div className="search admin-search"><Search size={17} /><input placeholder="Search token, name, phone, ID, course…" value={filters.query} onChange={updateFilter("query")} /></div><label>Event date<input type="date" value={filters.date} onChange={updateFilter("date")} /><small>{filters.date ? "Selected date" : "All dates"}</small></label><label>Status<select value={filters.status} onChange={updateFilter("status")}><option value="">All statuses</option>{Object.entries(statusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label>Panel<select value={filters.panelId} onChange={updateFilter("panelId")}><option value="">All panels</option>{panels.map((panel) => <option key={panel.id} value={panel.id}>{panel.name}{panel.active ? "" : " (inactive)"}</option>)}</select></label></div>
+    <div className="table-scroll"><table><thead><tr><th>Date</th><th>Token</th><th>Candidate</th><th>Course</th><th>Panel</th><th>Status</th><th>Score</th><th>Actions</th></tr></thead><tbody>{loading ? <tr><td colSpan="8" className="empty-cell">Loading candidate records…</td></tr> : tickets.length ? tickets.map((ticket) => <tr key={ticket.id}><td>{ticket.eventDate}</td><td><strong className="token-mini">{ticket.tokenCode}</strong></td><td><strong>{ticket.fullName}</strong><small>{ticket.phone}{ticket.banoqabilId ? ` · ${ticket.banoqabilId}` : ""}</small></td><td>{ticket.course}</td><td>{ticket.panelName}</td><td><span className={`status ${ticket.status}`}>{statusLabels[ticket.status]}</span></td><td>{ticket.interviewScore ? `${ticket.interviewScore}/10` : "—"}</td><td><div className="row-actions"><button title="Print ticket" onClick={() => setPrinting(ticket)}><Printer size={15} /></button><button title="Edit candidate" onClick={() => setEditing(ticket)}><Pencil size={15} /></button><button className="delete-row" title="Delete candidate" onClick={() => deleteTicket(ticket)}><Trash2 size={15} /></button></div></td></tr>) : <tr><td colSpan="8" className="empty-cell">No candidates match these filters.</td></tr>}</tbody></table></div>
+    <div className="pagination-bar"><span>Showing <strong>{firstRecord}–{lastRecord}</strong> of <strong>{pagination.total}</strong></span><div><button className="button secondary" disabled={pagination.page <= 1 || loading} onClick={() => setPage((value) => value - 1)}><ChevronLeft size={16} /> Previous</button><span>Page <strong>{pagination.page}</strong> of <strong>{pagination.totalPages}</strong></span><button className="button secondary" disabled={pagination.page >= pagination.totalPages || loading} onClick={() => setPage((value) => value + 1)}>Next <ChevronRight size={16} /></button></div></div>
+    {editing && <CandidateEditor ticket={editing} panels={panels} allowAnyDelete onClose={() => setEditing(null)} onSaved={(updated, shouldPrint) => { setEditing(null); refresh(); if (shouldPrint) setPrinting(updated); }} onDeleted={() => { setEditing(null); refresh(); }} setToast={setToast} />}
+    <TicketPrint ticket={printing} onClose={() => setPrinting(null)} />
+    {deleteAllOpen && <DeleteAllCandidatesDialog total={pagination.total} onClose={() => setDeleteAllOpen(false)} onDeleted={() => { setDeleteAllOpen(false); setPage(1); refresh(); }} setToast={setToast} />}
   </section>;
 }
 
@@ -386,7 +492,51 @@ function ReceptionDashboard({ user, onLogout, version, refresh }) {
   </Shell>;
 }
 
-function ManagedPanel({ panel, onUpdated, setToast }) {
+function AccessLinkDialog({ account, onClose, setToast }) {
+  const [network, setNetwork] = useState({ addresses: [], interfaces: [], preferredAddress: null });
+  const [selectedAddress, setSelectedAddress] = useState("");
+  const [qrData, setQrData] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const loadNetwork = async () => {
+    setLoading(true); setError("");
+    try {
+      const result = await api("/network");
+      setNetwork(result);
+      setSelectedAddress((current) => result.addresses.includes(current) ? current : (result.preferredAddress || result.addresses[0] || ""));
+      if (!result.addresses.length) setError("No LAN or hotspot address was detected. Connect the host laptop to the event network first.");
+    } catch (err) { setError(err.message); } finally { setLoading(false); }
+  };
+  useEffect(() => { loadNetwork(); }, [account.accessSlug]);
+  const accessUrl = selectedAddress ? `${selectedAddress}/?role=${encodeURIComponent(account.role)}&id=${encodeURIComponent(account.accessSlug)}` : "";
+  useEffect(() => {
+    let active = true;
+    if (!accessUrl) { setQrData(""); return () => { active = false; }; }
+    QRCode.toDataURL(accessUrl, { width: 300, margin: 1, errorCorrectionLevel: "M", color: { dark: "#081e19", light: "#ffffff" } })
+      .then((value) => { if (active) setQrData(value); })
+      .catch(() => { if (active) setError("Could not generate the QR code."); });
+    return () => { active = false; };
+  }, [accessUrl]);
+  const copy = async () => {
+    try { await copyText(accessUrl); setToast({ message: `${account.displayName} login link copied.` }); }
+    catch { setToast({ type: "error", message: "Could not copy the link. Select it manually instead." }); }
+  };
+  return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={`${account.displayName} access link`}>
+    <div className="form-dialog access-link-dialog">
+      <button type="button" className="dialog-close" onClick={onClose}>×</button>
+      <div className="eyebrow">Dedicated login · {account.role}</div><h2>{account.displayName}</h2><p className="muted">Scan this QR code or open the link on a device connected to the same Wi-Fi or hotspot.</p>
+      {network.addresses.length > 0 && <label>Host network address<select value={selectedAddress} onChange={(event) => setSelectedAddress(event.target.value)}>{network.addresses.map((address) => { const item = network.interfaces?.find((entry) => entry.address === address); return <option key={address} value={address}>{address.replace("http://", "")}{item?.interfaceName ? ` · ${item.interfaceName}` : ""}</option>; })}</select></label>}
+      {error && <div className="form-error">{error}</div>}
+      {loading ? <div className="qr-loading"><RefreshCw size={25} /> Detecting current network…</div> : accessUrl && <div className="access-link-content">
+        <div className="qr-frame">{qrData ? <img src={qrData} alt={`QR code for ${account.displayName}`} /> : <RefreshCw size={28} />}</div>
+        <div className="access-link-details"><span className="role-pill">{account.role}</span><strong>@{account.username}</strong><label>Direct login URL<input readOnly value={accessUrl} onFocus={(event) => event.target.select()} /></label><button className="button primary" onClick={copy}><Copy size={17} /> Copy link</button><button className="button secondary" onClick={loadNetwork}><RefreshCw size={17} /> Refresh IP</button></div>
+      </div>}
+      <div className="network-warning"><Wifi size={19} /><span><strong>Same network only</strong><small>First connect the device to this host laptop’s Wi-Fi/hotspot, then scan or open the link. The password is still required.</small></span></div>
+    </div>
+  </div>;
+}
+
+function ManagedPanel({ panel, onUpdated, setToast, onGetLink }) {
   const [name, setName] = useState(panel.name);
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -417,6 +567,7 @@ function ManagedPanel({ panel, onUpdated, setToast }) {
       <span className={`panel-state ${panel.active ? "active" : "inactive"}`}>{panel.active ? "Active" : "Inactive"}</span>
     </div>
     <div className="managed-stats"><span><strong>{panel.waiting}</strong>Waiting</span><span><strong>{panel.current}</strong>Current</span><span><strong>{panel.completed}</strong>Completed</span></div>
+    <button className="button access-link-button" disabled={!panel.active || !panel.access_slug} onClick={onGetLink}><Link2 size={16} /> Get login link & QR</button>
     <label>Panel display name<div className="input-wrap"><Pencil size={16} /><input value={name} onChange={(event) => setName(event.target.value)} /></div></label>
     <button className="button secondary wide-small" disabled={busy || name.trim() === panel.name} onClick={() => updatePanel({ name }, "Panel name updated everywhere.")}><Save size={16} /> Save name</button>
     <div className="password-reset"><label>New login password<div className="input-wrap"><LockKeyhole size={16} /><input type="password" placeholder="At least 6 characters" value={password} onChange={(event) => setPassword(event.target.value)} /></div></label><button className="button secondary" disabled={busy || !password} onClick={resetPassword}>Reset</button></div>
@@ -424,7 +575,7 @@ function ManagedPanel({ panel, onUpdated, setToast }) {
   </article>;
 }
 
-function ManagedReception({ reception, onUpdated, setToast }) {
+function ManagedReception({ reception, onUpdated, setToast, onGetLink }) {
   const [displayName, setDisplayName] = useState(reception.display_name);
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -449,6 +600,7 @@ function ManagedReception({ reception, onUpdated, setToast }) {
   return <article className={`managed-panel managed-reception ${reception.active ? "" : "inactive"}`}>
     <div className="managed-panel-head"><span className="admin-panel-number reception-number">R</span><div><strong>{reception.display_name}</strong><small>@{reception.username}</small></div><span className={`panel-state ${reception.active ? "active" : "inactive"}`}>{reception.active ? "Active" : "Inactive"}</span></div>
     <div className="reception-activity"><Ticket size={17} /><span><strong>{reception.tickets_today}</strong> tickets generated today</span></div>
+    <button className="button access-link-button" disabled={!reception.active || !reception.access_slug} onClick={onGetLink}><Link2 size={16} /> Get login link & QR</button>
     <label>Reception display name<div className="input-wrap"><Pencil size={16} /><input value={displayName} onChange={(event) => setDisplayName(event.target.value)} /></div></label>
     <button className="button secondary wide-small" disabled={busy || displayName.trim() === reception.display_name} onClick={() => updateReception({ displayName }, "Reception name updated.")}><Save size={16} /> Save name</button>
     <div className="password-reset"><label>New login password<div className="input-wrap"><LockKeyhole size={16} /><input type="password" placeholder="At least 8 characters" value={password} onChange={(event) => setPassword(event.target.value)} /></div></label><button className="button secondary" disabled={busy || !password} onClick={resetPassword}>Reset</button></div>
@@ -466,7 +618,7 @@ function SuperAdminDashboard({ user, onLogout, version, refresh }) {
   const [toast, setToast] = useState(null);
   const [busy, setBusy] = useState(false);
   const [receptionBusy, setReceptionBusy] = useState(false);
-  const [exportDate, setExportDate] = useState(localDate());
+  const [linkAccount, setLinkAccount] = useState(null);
   useEffect(() => { window.scrollTo(0, 0); }, []);
   useEffect(() => {
     Promise.all([api("/admin/panels"), api("/admin/receptions")])
@@ -499,7 +651,7 @@ function SuperAdminDashboard({ user, onLogout, version, refresh }) {
         <StatCard icon={UserRound} label="Reception desks" value={activeReceptions} tone="blue" detail="Active login accounts" />
         <StatCard icon={Clock3} label="Waiting now" value={waiting} tone="amber" detail="Across active queues" />
       </section>
-      <section className="export-card"><div><div className="eyebrow">Post-event data</div><h2>Export candidate records</h2><p>Includes candidate details, panel, status, score, remarks, and interview timestamps.</p></div><DataExport date={exportDate} onDateChange={setExportDate} setToast={setToast} /></section>
+      <AdminCandidateManager panels={panels} version={version} refresh={refresh} setToast={setToast} />
       <section className="admin-create-card">
         <div className="section-heading"><div><div className="eyebrow">Add workspace</div><h2>Create a new panel</h2><p>The panel receives its own queue and interviewer login immediately.</p></div><div className="step-badge"><Plus size={17} /></div></div>
         <form onSubmit={createPanel} className="admin-create-form">
@@ -519,12 +671,13 @@ function SuperAdminDashboard({ user, onLogout, version, refresh }) {
         </form>
       </section>
       <section className="managed-section"><div className="managed-title"><div><h2>All interview panels</h2><p>Names update on tickets, registration, panel screens, and the public display.</p></div><span>{active} active</span></div>
-        <div className="managed-grid">{panels.map((panel) => <ManagedPanel key={panel.id} panel={panel} onUpdated={refresh} setToast={setToast} />)}</div>
+        <div className="managed-grid">{panels.map((panel) => <ManagedPanel key={panel.id} panel={panel} onUpdated={refresh} setToast={setToast} onGetLink={() => setLinkAccount({ role: "panel", accessSlug: panel.access_slug, displayName: panel.name, username: panel.username })} />)}</div>
       </section>
       <section className="managed-section"><div className="managed-title"><div><h2>Reception accounts</h2><p>Every active Reception can register candidates and print tickets simultaneously.</p></div><span>{activeReceptions} active</span></div>
-        <div className="managed-grid">{receptions.map((reception) => <ManagedReception key={reception.id} reception={reception} onUpdated={refresh} setToast={setToast} />)}</div>
+        <div className="managed-grid">{receptions.map((reception) => <ManagedReception key={reception.id} reception={reception} onUpdated={refresh} setToast={setToast} onGetLink={() => setLinkAccount({ role: "reception", accessSlug: reception.access_slug, displayName: reception.display_name, username: reception.username })} />)}</div>
       </section>
     </main>
+    {linkAccount && <AccessLinkDialog account={linkAccount} onClose={() => setLinkAccount(null)} setToast={setToast} />}
     <Toast toast={toast} onClose={() => setToast(null)} />
   </Shell>;
 }
@@ -616,29 +769,69 @@ function DisplayBoard() {
   </main>;
 }
 
+function AccessLinkMessage({ title, message, actionLabel, onAction, secondaryLabel, onSecondary }) {
+  return <main className="login-page access-message-page"><section className="login-brand"><div className="brand-mark bq-brand-mark"><BrandLogo /></div><div className="eyebrow light">Dedicated access</div><h1>{title}</h1><p>{message}</p><div className="brand-stat"><Wifi size={22} /><span><strong>Check the event network</strong><small>This link works only on the host laptop’s Wi-Fi or hotspot.</small></span></div></section><section className="login-panel"><div className="login-card access-message-card"><div className="mobile-logo"><BrandLogo /> <span>Bano Qabil<small>Ticket System</small></span></div><div className="eyebrow">Account link</div><h2>{title}</h2><p className="muted">{message}</p><button className="button primary wide" onClick={onAction}>{actionLabel} <ArrowRight size={18} /></button>{secondaryLabel && <button className="regular-login-link" onClick={onSecondary}>{secondaryLabel}</button>}</div></section></main>;
+}
+
 function App() {
-  const isDisplay = new URLSearchParams(window.location.search).get("display") === "1";
+  const parameters = new URLSearchParams(window.location.search);
+  const isDisplay = parameters.get("display") === "1";
+  const requestedRole = parameters.get("role")?.toLowerCase() || "";
+  const requestedSlug = parameters.get("id")?.toLowerCase() || "";
   const [user, setUser] = useState(null);
   const [needsSetup, setNeedsSetup] = useState(false);
   const [checking, setChecking] = useState(!isDisplay);
+  const [scope, setScope] = useState(null);
+  const [scopeError, setScopeError] = useState("");
   const [version, refresh] = useLiveUpdates();
   useEffect(() => {
     if (isDisplay) return;
-    api("/setup/status").then(({ initialized }) => {
-      if (!initialized) { localStorage.removeItem("bq_token"); setNeedsSetup(true); setChecking(false); return; }
-      if (!localStorage.getItem("bq_token")) { setChecking(false); return; }
-      api("/auth/me").then(({ user: found }) => setUser(found)).catch(() => localStorage.removeItem("bq_token")).finally(() => setChecking(false));
-    }).catch(() => setChecking(false));
+    let active = true;
+    const boot = async () => {
+      try {
+        const { initialized } = await api("/setup/status");
+        if (!initialized) {
+          localStorage.removeItem("bq_token");
+          if (active) { setNeedsSetup(true); setChecking(false); }
+          return;
+        }
+        if ((requestedRole && !requestedSlug) || (!requestedRole && requestedSlug)) {
+          if (active) setScopeError("This login link is incomplete. Ask the Super Admin for a fresh QR code or link.");
+        } else if (requestedRole && requestedSlug) {
+          try {
+            const result = await api(`/access/${encodeURIComponent(requestedSlug)}?role=${encodeURIComponent(requestedRole)}`);
+            if (active) setScope(result.account);
+          } catch (err) { if (active) setScopeError(err.message); }
+        }
+        if (localStorage.getItem("bq_token")) {
+          try {
+            const result = await api("/auth/me");
+            if (active) setUser(result.user);
+          } catch { localStorage.removeItem("bq_token"); }
+        }
+      } finally { if (active) setChecking(false); }
+    };
+    boot();
+    return () => { active = false; };
   }, [isDisplay]);
-  const logout = async () => {
-    if (!window.confirm("Log out of the Bano Qabil Ticket System?")) return;
+  const endSession = async () => {
     try { await api("/auth/logout", { method: "POST" }); } catch {}
     localStorage.removeItem("bq_token"); setUser(null);
+  };
+  const logout = async () => {
+    if (!window.confirm("Log out of the Bano Qabil Ticket System?")) return;
+    await endSession();
+  };
+  const clearScope = () => {
+    window.history.replaceState({}, "", window.location.pathname);
+    setScope(null); setScopeError("");
   };
   if (isDisplay) return <DisplayBoard />;
   if (checking) return <div className="loading-screen"><BrandLogo /><span>Loading Bano Qabil Ticket System…</span></div>;
   if (needsSetup) return <SetupWizard onComplete={(createdUser) => { setNeedsSetup(false); setUser(createdUser); }} />;
-  if (!user) return <Login onLogin={setUser} />;
+  if (scopeError) return <AccessLinkMessage title="Link unavailable" message={scopeError} actionLabel={user ? "Continue to current workspace" : "Open regular login"} onAction={clearScope} />;
+  if (user && scope && user.accessSlug !== scope.slug) return <AccessLinkMessage title="Different account is signed in" message={`${user.displayName} is currently signed in, but this link belongs to ${scope.displayName}.`} actionLabel={`Switch to ${scope.displayName}`} onAction={endSession} secondaryLabel="Keep current account" onSecondary={clearScope} />;
+  if (!user) return <Login onLogin={setUser} scope={scope} onUseRegular={clearScope} />;
   if (user.role === "admin") return <SuperAdminDashboard user={user} onLogout={logout} version={version} refresh={refresh} />;
   if (user.role === "panel") return <PanelDashboard user={user} onLogout={logout} version={version} refresh={refresh} />;
   return <ReceptionDashboard user={user} onLogout={logout} version={version} refresh={refresh} />;

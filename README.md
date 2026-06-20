@@ -4,7 +4,7 @@ Made by Bano Qabil Incubation. An offline-first branded ticket and interview que
 
 ## Fastest setup (Windows)
 
-Double-click `release/Bano Qabil Ticket System Setup 1.6.0.exe`, complete the installer, and launch **Bano Qabil Ticket System** from the Start menu. If Windows SmartScreen appears, choose **More info → Run anyway**; the local event build is not code-signed.
+Double-click `release/Bano Qabil Ticket System Setup 1.8.0.exe`, complete the installer, and launch **Bano Qabil Ticket System** from the Start menu. If Windows SmartScreen appears, choose **More info → Run anyway**; the local event build is not code-signed.
 
 Super Admin login is fixed in the app:
 
@@ -22,9 +22,11 @@ On the first launch, the setup wizard asks you to create the first Reception acc
 - Separate configurable login and live queue for every panel
 - Call, announce, start, complete, and skip candidate workflow
 - Panel and Reception self-service password changes, plus Super Admin password resets
+- Stable dedicated LAN login links and offline QR codes for every Panel and Reception account
 - Candidate editing, safe panel reassignment, ticket regeneration, and guarded deletion
 - Interview scoring (1–10) and remarks captured with the completed interview
 - Date-based CSV and Excel exports containing post-event candidate and interview data
+- Super Admin candidate database with all-date pagination, search, filters, editing, printing, exports, per-record deletion, and typed-confirmation bulk deletion
 - Printable 80mm interview ticket
 - Public full-screen queue display at `/?display=1`
 - Local SQLite storage, audit log, and no internet dependency after installation
@@ -51,6 +53,8 @@ npm run desktop
 ## Accounts and panels
 
 Super Admin credentials are hardcoded for event-day access: `admin` / `BanoQabil@2026`. Create the first Reception account in the first-run wizard, then use the Super Admin dashboard to create and name each panel, create more Reception desks, and choose their login credentials.
+
+Every active Panel and Reception card has a **Get login link & QR** action. Open it after the host joins the event Wi-Fi/hotspot, choose the current LAN address, and share the generated link or QR. The receiving device must be connected to the same network; the account password is still required.
 
 ## Offline hotspot operation
 

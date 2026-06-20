@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Server } from "socket.io";
-import { DEFAULT_SUPER_ADMIN, db, hashPassword, initDatabase, todayLocal, verifyPassword } from "./db.js";
+import { DEFAULT_SUPER_ADMIN, db, generateAccessSlug, hashPassword, initDatabase, todayLocal, verifyPassword } from "./db.js";
 import { allowRoles, authRequired, canAccessPanel, createSession } from "./auth.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -25,7 +25,8 @@ const publicUser = (user) => ({
   displayName: user.display_name,
   role: user.role,
   panelId: user.panel_id,
-  panelName: user.panel_name || null
+  panelName: user.panel_name || null,
+  accessSlug: user.access_slug || null
 });
 
 const normalizePhone = (raw = "") => {
@@ -60,6 +61,32 @@ const mapTicket = (ticket) => ticket && ({
   interviewScore: ticket.interview_score,
   interviewRemarks: ticket.interview_remarks || ""
 });
+
+const ticketStatuses = new Set(["waiting", "called", "in_interview", "completed", "skipped"]);
+
+function buildCandidateFilters(query, { defaultDate = "" } = {}) {
+  const clauses = [];
+  const params = [];
+  const date = String(query.date ?? defaultDate).trim();
+  const status = String(query.status || "").trim();
+  const panelId = Number(query.panelId || 0);
+  const search = String(query.query || "").trim().slice(0, 100);
+  if (date && date !== "all") {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { error: "Choose a valid event date." };
+    clauses.push("t.event_date = ?"); params.push(date);
+  }
+  if (status) {
+    if (!ticketStatuses.has(status)) return { error: "Choose a valid candidate status." };
+    clauses.push("t.status = ?"); params.push(status);
+  }
+  if (panelId) { clauses.push("t.panel_id = ?"); params.push(panelId); }
+  if (search) {
+    const pattern = `%${search}%`;
+    clauses.push("(t.token_code LIKE ? OR t.full_name LIKE ? OR t.phone_display LIKE ? OR t.banoqabil_id LIKE ? OR t.course LIKE ? OR p.name LIKE ?)");
+    params.push(pattern, pattern, pattern, pattern, pattern, pattern);
+  }
+  return { sql: clauses.length ? `WHERE ${clauses.join(" AND ")}` : "", params, date };
+}
 
 const cleanCandidate = (body) => ({
   fullName: String(body.fullName || "").trim().replace(/\s+/g, " "),
@@ -134,10 +161,11 @@ app.post("/api/setup/initialize", (req, res) => {
 
   try {
     const admin = db.transaction(() => {
+      const accessSlug = generateAccessSlug("reception", receptionName);
       db.prepare(`
-        INSERT INTO users (username, password_hash, display_name, role, panel_id)
-        VALUES (?, ?, ?, 'reception', NULL)
-      `).run(receptionUsername, hashPassword(receptionPassword), receptionName);
+        INSERT INTO users (username, password_hash, display_name, role, panel_id, access_slug)
+        VALUES (?, ?, ?, 'reception', NULL, ?)
+      `).run(receptionUsername, hashPassword(receptionPassword), receptionName, accessSlug);
       return db.prepare("SELECT * FROM users WHERE username = ? COLLATE NOCASE AND role = 'admin'").get(DEFAULT_SUPER_ADMIN.username);
     })();
     const token = createSession(admin.id);
@@ -150,22 +178,42 @@ app.post("/api/setup/initialize", (req, res) => {
   }
 });
 
+app.get("/api/access/:slug", (req, res) => {
+  const slug = String(req.params.slug || "").trim().toLowerCase();
+  const requestedRole = String(req.query.role || "").trim().toLowerCase();
+  if (requestedRole && !["panel", "reception"].includes(requestedRole)) return res.status(400).json({ error: "Invalid access-link role." });
+  const account = db.prepare(`
+    SELECT u.id, u.username, u.display_name, u.role, u.panel_id, u.access_slug, u.active,
+      p.name AS panel_name, p.active AS panel_active
+    FROM users u LEFT JOIN panels p ON p.id = u.panel_id
+    WHERE u.access_slug = ? COLLATE NOCASE AND u.role IN ('panel', 'reception')
+  `).get(slug);
+  if (!account || (requestedRole && account.role !== requestedRole)) return res.status(404).json({ error: "This account link is not valid." });
+  if (!account.active || (account.role === "panel" && !account.panel_active)) return res.status(403).json({ error: "This account link is currently inactive." });
+  res.json({ account: {
+    slug: account.access_slug,
+    role: account.role,
+    username: account.username,
+    displayName: account.role === "panel" ? account.panel_name : account.display_name,
+    panelId: account.panel_id
+  } });
+});
+
 app.post("/api/auth/login", (req, res) => {
   const username = String(req.body.username || "").trim();
+  const slug = String(req.body.slug || "").trim().toLowerCase();
   const password = String(req.body.password || "");
   const user = db.prepare(`
     SELECT u.*, p.name AS panel_name, p.active AS panel_active
     FROM users u LEFT JOIN panels p ON p.id = u.panel_id
-    WHERE u.username = ? COLLATE NOCASE AND u.active = 1
-  `).get(username);
-  if (user?.role === "panel" && !user.panel_active) {
-    return res.status(403).json({ error: "This panel is currently inactive." });
-  }
+    WHERE ${slug ? "u.access_slug = ? COLLATE NOCASE" : "u.username = ? COLLATE NOCASE"}
+  `).get(slug || username);
+  if (user && (!user.active || (user.role === "panel" && !user.panel_active))) return res.status(403).json({ error: "This account is currently inactive." });
   if (!user || !verifyPassword(password, user.password_hash)) {
-    return res.status(401).json({ error: "Username or password is incorrect." });
+    return res.status(401).json({ error: slug ? "Password is incorrect." : "Username or password is incorrect." });
   }
   const token = createSession(user.id);
-  audit(user.id, "login");
+  audit(user.id, slug ? "login_scoped" : "login", null, slug ? { slug } : null);
   res.json({ token, user: publicUser(user) });
 });
 
@@ -199,7 +247,7 @@ app.get("/api/panels", authRequired, (_req, res) => {
 app.get("/api/admin/panels", authRequired, allowRoles("admin"), (_req, res) => {
   const date = todayLocal();
   const panels = db.prepare(`
-    SELECT p.id, p.name, p.active, u.username, u.display_name,
+    SELECT p.id, p.name, p.active, u.username, u.display_name, u.access_slug,
       (SELECT COUNT(*) FROM tickets t WHERE t.panel_id = p.id AND t.event_date = ? AND t.status = 'waiting') AS waiting,
       (SELECT COUNT(*) FROM tickets t WHERE t.panel_id = p.id AND t.event_date = ? AND t.status IN ('called','in_interview')) AS current,
       (SELECT COUNT(*) FROM tickets t WHERE t.panel_id = p.id AND t.event_date = ? AND t.status = 'completed') AS completed
@@ -222,13 +270,14 @@ app.post("/api/admin/panels", authRequired, allowRoles("admin"), (req, res) => {
     const panel = db.transaction(() => {
       const created = db.prepare("INSERT INTO panels (name, active) VALUES (?, 1)").run(name);
       const panelId = Number(created.lastInsertRowid);
+      const accessSlug = generateAccessSlug("panel", name);
       db.prepare(`
-        INSERT INTO users (username, password_hash, display_name, role, panel_id)
-        VALUES (?, ?, ?, 'panel', ?)
-      `).run(username, hashPassword(password), `${name} Interviewer`, panelId);
+        INSERT INTO users (username, password_hash, display_name, role, panel_id, access_slug)
+        VALUES (?, ?, ?, 'panel', ?, ?)
+      `).run(username, hashPassword(password), `${name} Interviewer`, panelId, accessSlug);
       audit(req.user.id, "panel_created", null, { panelId, name, username });
       return db.prepare(`
-        SELECT p.id, p.name, p.active, u.username, u.display_name, 0 AS waiting, 0 AS current, 0 AS completed
+        SELECT p.id, p.name, p.active, u.username, u.display_name, u.access_slug, 0 AS waiting, 0 AS current, 0 AS completed
         FROM panels p JOIN users u ON u.panel_id = p.id AND u.role = 'panel' WHERE p.id = ?
       `).get(panelId);
     })();
@@ -274,7 +323,7 @@ app.patch("/api/admin/panels/:panelId/password", authRequired, allowRoles("admin
 
 app.get("/api/admin/receptions", authRequired, allowRoles("admin"), (_req, res) => {
   const receptions = db.prepare(`
-    SELECT u.id, u.username, u.display_name, u.active, u.created_at,
+    SELECT u.id, u.username, u.display_name, u.access_slug, u.active, u.created_at,
       (SELECT COUNT(*) FROM tickets t WHERE t.created_by = u.id AND t.event_date = ?) AS tickets_today
     FROM users u WHERE u.role = 'reception' ORDER BY u.id
   `).all(todayLocal());
@@ -289,13 +338,14 @@ app.post("/api/admin/receptions", authRequired, allowRoles("admin"), (req, res) 
   if (!/^[a-z0-9._-]{3,30}$/.test(username)) return res.status(400).json({ error: "Username must be 3–30 characters using letters, numbers, dot, dash or underscore." });
   if (password.length < 8) return res.status(400).json({ error: "Password must be at least 8 characters." });
   try {
+    const accessSlug = generateAccessSlug("reception", displayName);
     const result = db.prepare(`
-      INSERT INTO users (username, password_hash, display_name, role, panel_id)
-      VALUES (?, ?, ?, 'reception', NULL)
-    `).run(username, hashPassword(password), displayName);
+      INSERT INTO users (username, password_hash, display_name, role, panel_id, access_slug)
+      VALUES (?, ?, ?, 'reception', NULL, ?)
+    `).run(username, hashPassword(password), displayName, accessSlug);
     audit(req.user.id, "reception_created", null, { receptionId: Number(result.lastInsertRowid), username });
     const reception = db.prepare(`
-      SELECT id, username, display_name, active, created_at, 0 AS tickets_today FROM users WHERE id = ?
+      SELECT id, username, display_name, access_slug, active, created_at, 0 AS tickets_today FROM users WHERE id = ?
     `).get(result.lastInsertRowid);
     res.status(201).json({ reception });
   } catch (error) {
@@ -362,17 +412,45 @@ app.get("/api/tickets", authRequired, (req, res) => {
   res.json({ tickets: tickets.map(mapTicket) });
 });
 
+app.get("/api/admin/candidates", authRequired, allowRoles("admin"), (req, res) => {
+  const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
+  const pageSize = Math.min(100, Math.max(10, Number.parseInt(req.query.pageSize, 10) || 20));
+  const filters = buildCandidateFilters(req.query);
+  if (filters.error) return res.status(400).json({ error: filters.error });
+  const total = db.prepare(`SELECT COUNT(*) AS count FROM tickets t JOIN panels p ON p.id = t.panel_id ${filters.sql}`).get(...filters.params).count;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const safePage = Math.min(page, totalPages);
+  const tickets = db.prepare(`${ticketSelect} ${filters.sql} ORDER BY t.event_date DESC, t.id DESC LIMIT ? OFFSET ?`)
+    .all(...filters.params, pageSize, (safePage - 1) * pageSize);
+  res.json({ tickets: tickets.map(mapTicket), pagination: { page: safePage, pageSize, total, totalPages } });
+});
+
 app.get("/api/exports/tickets", authRequired, allowRoles("admin", "reception"), (req, res) => {
-  const date = String(req.query.date || todayLocal());
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: "Choose a valid event date." });
-  const rows = db.prepare(`${ticketSelect} WHERE t.event_date = ? ORDER BY t.panel_id, t.token_number`).all(date);
+  if (req.user.role !== "admin" && String(req.query.date || "") === "all") return res.status(403).json({ error: "Only the Super Admin can export all event dates." });
+  const filters = buildCandidateFilters(req.query, { defaultDate: todayLocal() });
+  if (filters.error) return res.status(400).json({ error: filters.error });
+  const rows = db.prepare(`${ticketSelect} ${filters.sql} ORDER BY t.event_date DESC, t.panel_id, t.token_number`).all(...filters.params);
   const format = String(req.query.format || "csv").toLowerCase();
+  const fileLabel = filters.date && filters.date !== "all" ? filters.date : "all-dates";
   if (format === "xls") {
-    res.set({ "Content-Type": "application/vnd.ms-excel; charset=utf-8", "Content-Disposition": `attachment; filename="banoqabil-candidates-${date}.xls"` });
+    res.set({ "Content-Type": "application/vnd.ms-excel; charset=utf-8", "Content-Disposition": `attachment; filename="banoqabil-candidates-${fileLabel}.xls"` });
     return res.send(ticketsToExcelXml(rows));
   }
-  res.set({ "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="banoqabil-candidates-${date}.csv"` });
+  res.set({ "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="banoqabil-candidates-${fileLabel}.csv"` });
   res.send(`\uFEFF${ticketsToCsv(rows)}`);
+});
+
+app.delete("/api/admin/candidates", authRequired, allowRoles("admin"), (req, res) => {
+  const confirmation = String(req.body.confirmation || "");
+  if (confirmation !== "DELETE ALL CANDIDATES") return res.status(400).json({ error: "Type DELETE ALL CANDIDATES exactly to continue." });
+  const count = db.prepare("SELECT COUNT(*) AS count FROM tickets").get().count;
+  db.transaction(() => {
+    db.prepare("UPDATE audit_log SET ticket_id = NULL WHERE ticket_id IS NOT NULL").run();
+    db.prepare("DELETE FROM tickets").run();
+    audit(req.user.id, "all_candidates_deleted", null, { count });
+  })();
+  broadcastUpdate("all_candidates_deleted", { count });
+  res.json({ deleted: count });
 });
 
 app.post("/api/tickets", authRequired, allowRoles("admin", "reception"), (req, res) => {
@@ -465,8 +543,9 @@ app.delete("/api/tickets/:id", authRequired, allowRoles("admin", "reception"), (
   const id = Number(req.params.id);
   const ticket = db.prepare("SELECT * FROM tickets WHERE id = ?").get(id);
   if (!ticket) return res.status(404).json({ error: "Ticket not found." });
-  if (!["waiting", "skipped"].includes(ticket.status)) return res.status(409).json({ error: "Only waiting or skipped tickets can be deleted." });
+  if (req.user.role !== "admin" && !["waiting", "skipped"].includes(ticket.status)) return res.status(409).json({ error: "Only waiting or skipped tickets can be deleted by Reception." });
   db.transaction(() => {
+    db.prepare("UPDATE audit_log SET ticket_id = NULL WHERE ticket_id = ?").run(id);
     audit(req.user.id, "ticket_deleted", null, { ticketId: id, tokenCode: ticket.token_code, candidate: ticket.full_name });
     db.prepare("DELETE FROM tickets WHERE id = ?").run(id);
   })();
@@ -563,11 +642,22 @@ app.get("/api/display", (_req, res) => {
 });
 
 app.get("/api/network", authRequired, allowRoles("admin", "reception"), (_req, res) => {
-  const addresses = [];
-  for (const interfaces of Object.values(os.networkInterfaces())) {
-    for (const item of interfaces || []) if (item.family === "IPv4" && !item.internal) addresses.push(`http://${item.address}:${PORT}`);
+  const candidates = [];
+  for (const [interfaceName, interfaces] of Object.entries(os.networkInterfaces())) {
+    for (const item of interfaces || []) {
+      if ((item.family === "IPv4" || item.family === 4) && !item.internal && !item.address.startsWith("169.254.")) {
+        const priority = item.address.startsWith("192.168.137.") ? 0
+          : item.address.startsWith("192.168.") ? 1
+            : item.address.startsWith("10.") ? 2
+              : /^172\.(1[6-9]|2\d|3[01])\./.test(item.address) ? 3 : 4;
+        candidates.push({ address: `http://${item.address}:${PORT}`, interfaceName, priority });
+      }
+    }
   }
-  res.json({ addresses, displayPath: "/?display=1" });
+  candidates.sort((a, b) => a.priority - b.priority || a.interfaceName.localeCompare(b.interfaceName));
+  const interfaces = [...new Map(candidates.map((item) => [item.address, item])).values()];
+  const addresses = interfaces.map((item) => item.address);
+  res.json({ addresses, interfaces: interfaces.map(({ priority, ...item }) => item), preferredAddress: addresses[0] || null, displayPath: "/?display=1" });
 });
 
 if (process.env.NODE_ENV === "production") {

@@ -18,7 +18,7 @@ export function authRequired(req, res, next) {
   if (!token) return res.status(401).json({ error: "Login required" });
 
   const user = db.prepare(`
-    SELECT u.id, u.username, u.display_name, u.role, u.panel_id, p.name AS panel_name
+    SELECT u.id, u.username, u.display_name, u.role, u.panel_id, u.access_slug, p.name AS panel_name
     FROM sessions s JOIN users u ON u.id = s.user_id
     LEFT JOIN panels p ON p.id = u.panel_id
     WHERE s.token_hash = ? AND s.expires_at > datetime('now') AND u.active = 1
